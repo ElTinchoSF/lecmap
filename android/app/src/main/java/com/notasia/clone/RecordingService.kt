@@ -18,12 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -41,16 +36,16 @@ object RecordingState {
   var startedAt by mutableStateOf(0L)
     internal set
   var uploadError by mutableStateOf<String?>(null)
-  var uploadedId by mutableStateOf<String?>(null)
+  var savedLocalId by mutableStateOf<String?>(null)
     internal set
 
   fun clearUploadError() {
     uploadError = null
   }
 
-  fun consumeUploaded(): String? {
-    val id = uploadedId
-    uploadedId = null
+  fun consumeSaved(): String? {
+    val id = savedLocalId
+    savedLocalId = null
     return id
   }
 }
@@ -58,6 +53,9 @@ object RecordingState {
 /**
  * Servicio en primer plano con tipo "microphone": sigue grabando con la
  * pantalla apagada, la app en segundo plano o el teléfono bloqueado.
+ *
+ * Al detener guarda el .m4a en el teléfono y crea una nota local. No sube nada:
+ * el audio solo se envía al servidor cuando el usuario toca "Analizar".
  */
 class RecordingService : Service() {
   companion object {
@@ -82,7 +80,7 @@ class RecordingService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     when (intent?.action) {
       ACTION_START -> if (recorder == null) startRecording()
-      ACTION_STOP -> stopAndUpload()
+      ACTION_STOP -> stopAndSave()
     }
     return START_NOT_STICKY
   }
@@ -149,7 +147,7 @@ class RecordingService : Service() {
       RecordingState.isRecording = true
       RecordingState.startedAt = startedAt
       RecordingState.uploadError = null
-      RecordingState.uploadedId = null
+      RecordingState.savedLocalId = null
 
       val notification = buildNotification("Grabando… tocá Detener para finalizar")
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -173,7 +171,7 @@ class RecordingService : Service() {
     }
   }
 
-  private fun stopAndUpload() {
+  private fun stopAndSave() {
     val file = output
     val start = if (startedAt > 0L) startedAt else System.currentTimeMillis()
     var failed = false
@@ -200,59 +198,33 @@ class RecordingService : Service() {
 
     RecordingState.isUploading = true
     getSystemService(NotificationManager::class.java)
-      .notify(NOTIFICATION_ID, buildNotification("Subiendo grabación…"))
+      .notify(NOTIFICATION_ID, buildNotification("Guardando en el teléfono…"))
+
+    val localId = "local_$start"
+    val title = "Nota " + SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
+      .format(Date(start))
+    val note = LocalNote(
+      localId = localId,
+      serverId = null,
+      title = title,
+      createdAt = start,
+      status = "local",
+      audioFile = file.absolutePath,
+    )
 
     scope.launch {
-      val uploaded = uploadWithRetry(file, start)
-      if (uploaded) {
-        file.delete()
-      } else {
-        // No borrar: el archivo queda en filesDir y se reintenta al abrir la app.
-        val detail = RecordingState.uploadError ?: "No se pudo subir"
-        RecordingState.uploadError = "$detail. La grabación quedó guardada en el teléfono."
-      }
-      RecordingState.isUploading = false
-      stopForegroundCompat()
-      stopSelf()
-    }
-  }
-
-  /**
-   * Sube el archivo con reintentos cortos (por si se corta el Wi-Fi o los
-   * datos justo al detener). Devuelve true solo si el backend lo aceptó.
-   */
-  private suspend fun uploadWithRetry(file: File, startedAtMs: Long): Boolean {
-    val prefs = getSharedPreferences("notas_ia", MODE_PRIVATE)
-    val url = prefs.getString("server_url", Net.DEFAULT_BASE_URL) ?: Net.DEFAULT_BASE_URL
-    val api = Net.api(url)
-    val title = "Nota " + SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
-      .format(Date(startedAtMs))
-
-    val waits = longArrayOf(0L, 5_000L, 15_000L, 30_000L)
-    var lastError: String? = null
-
-    for ((index, wait) in waits.withIndex()) {
-      if (wait > 0L) delay(wait)
       try {
-        val audio = file.asRequestBody("audio/mp4".toMediaType())
-        val part = MultipartBody.Part.createFormData("audio", file.name, audio)
-        val rec = api.upload(part, title.toRequestBody("text/plain".toMediaType()))
-        RecordingState.uploadedId = rec.id
+        LocalStore(applicationContext).upsert(note)
+        RecordingState.savedLocalId = localId
         RecordingState.uploadError = null
-        return true
       } catch (e: Exception) {
-        lastError = e.message?.takeIf { it.isNotBlank() } ?: "error de red"
-        if (index < waits.lastIndex) {
-          getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID,
-            buildNotification("Sin conexión, reintentando subida…"),
-          )
-        }
+        RecordingState.uploadError = "No se pudo guardar la nota: ${e.message ?: "error"}"
+      } finally {
+        RecordingState.isUploading = false
+        stopForegroundCompat()
+        stopSelf()
       }
     }
-
-    RecordingState.uploadError = "No se pudo subir: $lastError"
-    return false
   }
 
   private fun stopForegroundCompat() {

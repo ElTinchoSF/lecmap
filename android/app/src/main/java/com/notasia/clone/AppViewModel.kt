@@ -16,13 +16,11 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.HttpException
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
   // Se conserva la clave "notas_ia" para no perder el servidor ya configurado.
   private val prefs = app.getSharedPreferences("notas_ia", Context.MODE_PRIVATE)
+  private val store = LocalStore(app)
 
   var list by mutableStateOf<List<RecordingDto>>(emptyList())
     private set
@@ -35,13 +33,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   var error by mutableStateOf<String?>(null)
   var pendingDelete by mutableStateOf<RecordingDto?>(null)
     private set
+  var pendingRelease by mutableStateOf<RecordingDto?>(null)
+    private set
 
   var serverUrl by mutableStateOf(
     Net.normalize(prefs.getString("server_url", Net.DEFAULT_BASE_URL) ?: Net.DEFAULT_BASE_URL)
   )
     private set
-
-  private var retrying = false
 
   private val api get() = Net.api(serverUrl)
 
@@ -56,24 +54,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
   fun search() = refresh()
 
+  /**
+   * Lista las notas locales y las del servidor. La copia local es la fuente
+   * para el audio; el servidor aporta transcripción, resumen y mapa.
+   */
   fun refresh() {
     viewModelScope.launch {
+      val locals = withContext(Dispatchers.IO) { store.list() }
       try {
-        list = withContext(Dispatchers.IO) { api.list(query) }
+        val server = withContext(Dispatchers.IO) { api.list(query) }
+        list = merge(locals, server)
       } catch (e: Exception) {
-        error = friendly(e)
+        list = merge(locals, emptyList())
+        if (locals.isEmpty()) error = friendly(e)
       }
     }
   }
 
-  fun toggle(id: String) {
-    if (selected?.id == id) {
+  fun toggle(rec: RecordingDto) {
+    if (selected?.id == rec.id) {
       close()
+      return
+    }
+    val serverId = rec.serverId
+    if (serverId == null) {
+      selected = rec
+      answer = ""
       return
     }
     viewModelScope.launch {
       try {
-        selected = withContext(Dispatchers.IO) { api.get(id) }
+        val detail = withContext(Dispatchers.IO) { api.get(serverId) }
+        val local = withContext(Dispatchers.IO) { store.findByServerId(serverId) }
+        selected = if (local != null) detail.withLocal(local) else detail
         answer = ""
       } catch (e: Exception) {
         if (!handleGone(e)) error = friendly(e)
@@ -86,28 +99,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     answer = ""
   }
 
-  fun transcribe() = mutate { api.transcribe(it) }
-
-  fun summarize() = mutate { api.summarize(it, SummarizeReq()) }
-
-  /**
-   * Analiza una nota desde la tarjeta: transcribe (si hace falta) y resume
-   * en una sola acción, sin tener que abrir el detalle.
-   */
-  fun analyze(id: String) {
-    if (id.isBlank() || busy) return
+  fun transcribe() {
+    val rec = selected ?: return
+    val serverId = rec.serverId
+    if (serverId == null) {
+      analyze(rec)
+      return
+    }
     viewModelScope.launch {
       busy = true
       error = null
       try {
-        val detail = withContext(Dispatchers.IO) { api.get(id) }
-        selected = detail
-        answer = ""
-        if (detail.status != "ready") {
-          selected = withContext(Dispatchers.IO) { api.transcribe(id) }
+        val local = withContext(Dispatchers.IO) { store.findByServerId(serverId) }
+        if (rec.audioPath == null && local?.audioFile != null) {
+          val file = File(local.audioFile)
+          if (file.exists()) {
+            val part = MultipartBody.Part.createFormData(
+              "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
+            )
+            withContext(Dispatchers.IO) { api.uploadAudio(serverId, part) }
+          }
         }
-        selected = withContext(Dispatchers.IO) { api.summarize(id, SummarizeReq()) }
-        list = withContext(Dispatchers.IO) { api.list(query) }
+        val detail = withContext(Dispatchers.IO) { api.transcribe(serverId) }
+        store.updateFromServer(serverId, detail)
+        selected = store.findByServerId(serverId)?.let { detail.withLocal(it) } ?: detail
+        refresh()
       } catch (e: Exception) {
         if (!handleGone(e)) error = friendly(e)
       } finally {
@@ -116,16 +132,90 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
   }
 
-  private fun mutate(block: suspend (String) -> RecordingDto) {
-    val id = selected?.id ?: return
+  fun summarize() {
+    val rec = selected ?: return
+    val serverId = rec.serverId
+    if (serverId == null) {
+      analyze(rec)
+      return
+    }
     viewModelScope.launch {
       busy = true
       error = null
       try {
-        selected = withContext(Dispatchers.IO) { block(id) }
-        list = withContext(Dispatchers.IO) { api.list(query) }
+        val detail = withContext(Dispatchers.IO) { api.summarize(serverId, SummarizeReq()) }
+        store.updateFromServer(serverId, detail)
+        selected = store.findByServerId(serverId)?.let { detail.withLocal(it) } ?: detail
+        refresh()
       } catch (e: Exception) {
         if (!handleGone(e)) error = friendly(e)
+      } finally {
+        busy = false
+      }
+    }
+  }
+
+  /**
+   * Analiza una nota desde la tarjeta: si es local la sube una sola vez, y
+   * después transcribe y resume en el servidor. El audio local no se borra.
+   */
+  fun analyze(rec: RecordingDto) {
+    if (busy) return
+    viewModelScope.launch {
+      busy = true
+      error = null
+      var local = rec.localId?.let { store.get(it) }
+        ?: rec.serverId?.let { store.findByServerId(it) }
+      try {
+        var serverId = rec.serverId ?: local?.serverId
+        var current = rec
+
+        if (serverId == null) {
+          val l = local ?: throw IllegalStateException("No hay una copia local de esta nota")
+          val file = l.audioFile?.let { File(it) }?.takeIf { it.exists() }
+            ?: throw IllegalStateException("El audio local ya no está disponible")
+          val part = MultipartBody.Part.createFormData(
+            "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
+          )
+          val titleBody = l.title.toRequestBody("text/plain".toMediaType())
+          val created = withContext(Dispatchers.IO) { api.upload(part, titleBody) }
+          serverId = created.id ?: throw IllegalStateException("El servidor no devolvió un id")
+          store.setServerId(l.localId, serverId)
+          current = created
+        }
+
+        if (current.transcript.isNullOrEmpty()) {
+          if (current.audioPath == null) {
+            val l = local ?: store.findByServerId(serverId)
+            val file = l?.audioFile?.let { File(it) }?.takeIf { it.exists() }
+            if (file != null) {
+              val part = MultipartBody.Part.createFormData(
+                "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
+              )
+              withContext(Dispatchers.IO) { api.uploadAudio(serverId, part) }
+            } else {
+              throw IllegalStateException("No hay audio disponible para transcribir")
+            }
+          }
+          current = withContext(Dispatchers.IO) { api.transcribe(serverId) }
+          store.updateFromServer(serverId, current)
+          selected = current
+        }
+
+        if (current.summary.isNullOrBlank()) {
+          current = withContext(Dispatchers.IO) { api.summarize(serverId, SummarizeReq()) }
+          store.updateFromServer(serverId, current)
+        }
+
+        local = store.findByServerId(serverId)
+        selected = if (local != null) current.withLocal(local) else current
+        refresh()
+      } catch (e: Exception) {
+        if (!handleGone(e)) {
+          error = friendly(e)
+          local?.let { store.setStatus(it.localId, "error", friendly(e)) }
+          refresh()
+        }
       } finally {
         busy = false
       }
@@ -133,13 +223,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   fun ask(question: String) {
-    val id = selected?.id ?: return
+    val rec = selected ?: return
+    val serverId = rec.serverId
+    if (serverId == null) {
+      error = "Analizá la nota primero para poder preguntarle a ApIA."
+      return
+    }
     if (question.isBlank()) return
     viewModelScope.launch {
       busy = true
       error = null
       try {
-        val res = withContext(Dispatchers.IO) { api.ask(id, AskReq(question.trim())) }
+        val res = withContext(Dispatchers.IO) { api.ask(serverId, AskReq(question.trim())) }
         answer = res.answer.orEmpty().ifBlank { "Sin respuesta." }
       } catch (e: Exception) {
         if (!handleGone(e)) error = friendly(e)
@@ -159,81 +254,133 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
   fun confirmDelete() {
     val rec = pendingDelete ?: return
-    val id = rec.id ?: return
     pendingDelete = null
-    viewModelScope.launch {
-      try {
-        withContext(Dispatchers.IO) { api.delete(id) }
-        if (selected?.id == id) close()
-        refresh()
-      } catch (e: Exception) {
-        if (e is HttpException && e.code() == 404) refresh() else error = friendly(e)
-      }
-    }
-  }
-
-  fun upload(file: File, title: String) {
     viewModelScope.launch {
       busy = true
       error = null
       try {
-        val audio = file.asRequestBody("audio/mp4".toMediaType())
-        val part = MultipartBody.Part.createFormData("audio", file.name, audio)
-        val titleBody = title.toRequestBody("text/plain".toMediaType())
-        selected = withContext(Dispatchers.IO) { api.upload(part, titleBody) }
-        list = withContext(Dispatchers.IO) { api.list(query) }
+        val serverId = rec.serverId
+        if (serverId != null) {
+          try {
+            withContext(Dispatchers.IO) { api.delete(serverId) }
+          } catch (e: HttpException) {
+            if (e.code() != 404) throw e
+          }
+        }
+        rec.localId?.let { withContext(Dispatchers.IO) { store.delete(it) } }
+          ?: rec.serverId?.let { withContext(Dispatchers.IO) { store.deleteByServerId(it) } }
+        if (selected?.id == rec.id) close()
+        refresh()
       } catch (e: Exception) {
         error = friendly(e)
       } finally {
         busy = false
-        file.delete()
       }
     }
   }
 
-  /**
-   * Reintenta subir grabaciones que quedaron guardadas porque no había red
-   * al detener la grabación. Se llama al abrir o volver a la app.
-   */
-  fun retryPending() {
-    if (retrying || RecordingState.isUploading) return
-    val pending = getApplication<Application>().filesDir
-      .listFiles { f -> f.name.startsWith("nota_") && f.name.endsWith(".m4a") }
-      ?.sortedBy { it.lastModified() }
-      ?: return
-    if (pending.isEmpty()) return
+  fun requestReleaseAudio(rec: RecordingDto) {
+    pendingRelease = rec
+  }
 
-    retrying = true
+  fun cancelReleaseAudio() {
+    pendingRelease = null
+  }
+
+  fun confirmReleaseAudio() {
+    val rec = pendingRelease ?: return
+    pendingRelease = null
     viewModelScope.launch {
       busy = true
-      for (file in pending) {
-        try {
-          val started = file.name.removePrefix("nota_").removeSuffix(".m4a")
-            .toLongOrNull() ?: file.lastModified()
-          val stamp = SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(started))
-          val audio = file.asRequestBody("audio/mp4".toMediaType())
-          val part = MultipartBody.Part.createFormData("audio", file.name, audio)
-          val title = "Nota $stamp".toRequestBody("text/plain".toMediaType())
-          withContext(Dispatchers.IO) { api.upload(part, title) }
-          file.delete()
-        } catch (e: Exception) {
-          error = "Quedó una grabación pendiente: ${friendly(e)}"
-          break
-        }
-      }
+      error = null
       try {
-        list = withContext(Dispatchers.IO) { api.list(query) }
-      } catch (_: Exception) {
+        val localId = rec.localId
+        if (localId != null) {
+          withContext(Dispatchers.IO) {
+            store.get(localId)?.audioFile?.let { path ->
+              try {
+                File(path).delete()
+              } catch (_: Exception) {
+              }
+            }
+            store.setAudioFile(localId, null)
+          }
+        }
+        if (selected?.id == rec.id) selected = selected?.copy(hasLocalAudio = false)
+        refresh()
+      } catch (e: Exception) {
+        error = friendly(e)
+      } finally {
+        busy = false
       }
-      busy = false
-      retrying = false
     }
   }
+
+  fun localAudioPath(rec: RecordingDto): File? {
+    val localId = rec.localId ?: return null
+    val path = store.get(localId)?.audioFile ?: return null
+    return File(path).takeIf { it.exists() }
+  }
+
+  fun serverAudioUrl(rec: RecordingDto): String? {
+    val name = rec.audioPath
+      ?.substringAfterLast('/')
+      ?.substringAfterLast('\\')
+      ?.takeIf { it.isNotBlank() }
+      ?: return null
+    return Net.normalize(serverUrl) + "files/" + name
+  }
+
+  private fun merge(locals: List<LocalNote>, server: List<RecordingDto>): List<RecordingDto> {
+    val byServer = server.filter { it.id != null }.associateBy { it.id!! }
+    val used = mutableSetOf<String>()
+    val out = mutableListOf<RecordingDto>()
+
+    for (local in locals) {
+      val remote = local.serverId?.let { byServer[it] }
+      if (remote != null) {
+        used.add(remote.id!!)
+        out.add(remote.withLocal(local))
+      } else {
+        out.add(local.toDto(null))
+      }
+    }
+    for (remote in server) {
+      if (remote.id != null && !used.contains(remote.id)) out.add(remote)
+    }
+    return out
+  }
+
+  private fun LocalNote.toDto(remote: RecordingDto?): RecordingDto = RecordingDto(
+    id = remote?.id ?: localId,
+    title = remote?.title?.takeIf { it.isNotBlank() } ?: title,
+    status = remote?.status ?: status,
+    error = remote?.error ?: error,
+    audioPath = remote?.audioPath,
+    summary = remote?.summary ?: summary,
+    mindmap = remote?.mindmap ?: mindmap,
+    transcript = remote?.transcript?.takeIf { it.isNotEmpty() } ?: transcript,
+    localId = localId,
+    serverId = remote?.id ?: serverId,
+    hasLocalAudio = audioFile?.let { File(it).exists() } == true,
+  )
+
+  private fun RecordingDto.withLocal(local: LocalNote): RecordingDto = copy(
+    localId = local.localId,
+    serverId = id,
+    hasLocalAudio = local.audioFile?.let { File(it).exists() } == true,
+    title = title?.takeIf { it.isNotBlank() } ?: local.title,
+    status = status ?: local.status,
+    error = error ?: local.error,
+    summary = summary ?: local.summary,
+    mindmap = mindmap ?: local.mindmap,
+    transcript = transcript?.takeIf { it.isNotEmpty() } ?: local.transcript,
+  )
 
   private fun handleGone(e: Exception): Boolean {
     if (e is HttpException && e.code() == 404) {
       close()
-      error = "Esa nota ya no existe. Actualizando la lista…"
+      error = "Esa nota ya no existe en el servidor. La copia local sigue disponible."
       refresh()
       return true
     }

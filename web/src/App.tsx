@@ -1,5 +1,15 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import type { CSSProperties, ReactNode, SyntheticEvent } from 'react';
+import {
+  deleteAudio,
+  deleteLocalNote,
+  getAudio,
+  getLocalNote,
+  listLocalNotes,
+  saveAudio,
+  saveLocalNote,
+} from './local';
+import type { LocalNote } from './local';
 import './App.css';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
@@ -40,6 +50,14 @@ const ALL_LAYOUTS: MindLayout[] = [
 type Recording = {
   id: string; title: string; status: string; error?: string;
   audioPath?: string | null; transcript: Segment[]; summary: string | null; mindmap: any;
+  createdAt?: string;
+};
+
+type NoteView = Recording & {
+  localId?: string;
+  serverId?: string;
+  hasLocalAudio: boolean;
+  hasServerAudio: boolean;
 };
 
 function fmtTime(s: number) {
@@ -539,108 +557,492 @@ function MindmapView({ mm }: { mm: any }) {
   return <div className="mindmap">{body}</div>;
 }
 
+function serverAudioUrl(audioPath?: string | null): string | null {
+  if (!audioPath) return null;
+  return `${API}/files/${audioPath.split(/[\\/]/).pop()}`;
+}
+
+function localMatches(local: LocalNote, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  if (local.title.toLowerCase().includes(needle)) return true;
+  return local.transcript.some((s) => s.text.toLowerCase().includes(needle));
+}
+
+function mergeNotes(server: Recording[], locals: LocalNote[], q: string, serverOk: boolean): NoteView[] {
+  const byServer = new Map(server.map((s) => [s.id, s]));
+  const used = new Set<string>();
+  const merged: NoteView[] = [];
+
+  for (const local of locals) {
+    if (local.serverId && byServer.has(local.serverId)) {
+      const s = byServer.get(local.serverId)!;
+      used.add(s.id);
+      merged.push({
+        ...s,
+        localId: local.id,
+        serverId: s.id,
+        title: s.title || local.title,
+        status: s.status || local.status,
+        error: s.error || local.error,
+        transcript: s.transcript?.length ? s.transcript : local.transcript,
+        summary: s.summary ?? local.summary,
+        mindmap: s.mindmap ?? local.mindmap,
+        createdAt: s.createdAt || local.createdAt,
+        hasLocalAudio: local.hasAudio,
+        hasServerAudio: !!s.audioPath,
+      });
+      continue;
+    }
+
+    // Si la lista del servidor se cargó bien y la nota mapeada no aparece, es
+    // porque el servidor la borró o porque no coincide con la búsqueda.
+    if (local.serverId && serverOk) {
+      if (!localMatches(local, q)) continue;
+      merged.push({
+        id: local.id,
+        localId: local.id,
+        serverId: local.serverId,
+        title: local.title,
+        status: local.status,
+        error: local.error,
+        audioPath: null,
+        transcript: local.transcript,
+        summary: local.summary,
+        mindmap: local.mindmap,
+        createdAt: local.createdAt,
+        hasLocalAudio: local.hasAudio,
+        hasServerAudio: false,
+      });
+      continue;
+    }
+
+    if (!localMatches(local, q)) continue;
+    merged.push({
+      id: local.id,
+      localId: local.id,
+      serverId: local.serverId || undefined,
+      title: local.title,
+      status: local.status,
+      error: local.error,
+      audioPath: null,
+      transcript: local.transcript,
+      summary: local.summary,
+      mindmap: local.mindmap,
+      createdAt: local.createdAt,
+      hasLocalAudio: local.hasAudio,
+      hasServerAudio: false,
+    });
+  }
+
+  for (const s of server) {
+    if (used.has(s.id)) continue;
+    merged.push({
+      ...s,
+      serverId: s.id,
+      hasLocalAudio: false,
+      hasServerAudio: !!s.audioPath,
+    });
+  }
+
+  return merged.sort((a, b) => {
+    const at = a.createdAt || '';
+    const bt = b.createdAt || '';
+    return at < bt ? 1 : at > bt ? -1 : 0;
+  });
+}
+
+function noteNeedsAnalysis(note: NoteView): boolean {
+  return !note.summary || note.transcript.length === 0;
+}
+
 export default function App() {
-  const [list, setList] = useState<Recording[]>([]);
+  const [serverNotes, setServerNotes] = useState<Recording[]>([]);
+  const [locals, setLocals] = useState<LocalNote[]>([]);
+  const [serverOk, setServerOk] = useState(true);
   const [q, setQ] = useState('');
-  const [sel, setSel] = useState<Recording | null>(null);
+  const [sel, setSel] = useState<NoteView | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState('');
   const [rec, setRec] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [activeSeg, setActiveSeg] = useState<number>(-1);
+  const [error, setError] = useState<string | null>(null);
   const mr = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const detailRef = useRef<HTMLDivElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
-    const r = await fetch(`${API}/recordings?q=${encodeURIComponent(q)}`);
-    setList(await r.json());
+    const localList = await listLocalNotes().catch(() => [] as LocalNote[]);
+    setLocals(localList);
+    try {
+      const r = await fetch(`${API}/recordings?q=${encodeURIComponent(q)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      setServerNotes(Array.isArray(data) ? data : []);
+      setServerOk(true);
+    } catch {
+      setServerNotes([]);
+      setServerOk(false);
+    }
   }, [q]);
 
   useEffect(() => { load(); }, [load]);
 
+  const list = useMemo(
+    () => mergeNotes(serverNotes, locals, q, serverOk),
+    [serverNotes, locals, q, serverOk],
+  );
+
+  const refreshLocals = async () => {
+    setLocals(await listLocalNotes());
+  };
+
+  const releaseObjectUrl = () => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+  };
+
+  const chooseAudio = async (note: NoteView) => {
+    releaseObjectUrl();
+    if (note.localId && note.hasLocalAudio) {
+      const blob = await getAudio(note.localId);
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        objectUrlRef.current = url;
+        setAudioUrl(url);
+        return;
+      }
+    }
+    setAudioUrl(serverAudioUrl(note.audioPath));
+  };
+
   const toggleRec = async () => {
+    setError(null);
     if (rec) {
       mr.current?.stop();
       setRec(false);
       return;
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const m = new MediaRecorder(stream);
-    chunks.current = [];
-    m.ondataavailable = (e) => chunks.current.push(e.data);
-    m.onstop = async () => {
-      const blob = new Blob(chunks.current, { type: m.mimeType });
-      const fd = new FormData();
-      fd.append('audio', blob, 'nota.webm');
-      fd.append('title', 'Nota ' + new Date().toLocaleString());
-      await fetch(`${API}/recordings`, { method: 'POST', body: fd });
-      load();
-    };
-    m.start();
-    mr.current = m;
-    setRec(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/webm';
+      const m = new MediaRecorder(stream, { mimeType: mime });
+      chunks.current = [];
+      m.ondataavailable = (e) => { if (e.data.size > 0) chunks.current.push(e.data); };
+      m.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(chunks.current, { type: m.mimeType || 'audio/webm' });
+        chunks.current = [];
+        if (blob.size === 0) {
+          setError('La grabación quedó vacía');
+          return;
+        }
+        const localId = `local_${Date.now()}`;
+        const note: LocalNote = {
+          id: localId,
+          serverId: null,
+          title: 'Nota ' + new Date().toLocaleString(),
+          createdAt: new Date().toISOString(),
+          status: 'local',
+          transcript: [],
+          summary: null,
+          mindmap: null,
+          hasAudio: true,
+        };
+        try {
+          await saveAudio(localId, blob);
+          await saveLocalNote(note);
+          await refreshLocals();
+        } catch (e: any) {
+          setError('No se pudo guardar la grabación en este dispositivo: ' + (e?.message || e));
+        }
+      };
+      m.start(1000);
+      mr.current = m;
+      setRec(true);
+    } catch (e: any) {
+      setError('No se pudo acceder al micrófono: ' + (e?.message || e));
+    }
   };
 
-  const open = async (id: string) => {
-    const r = await fetch(`${API}/recordings/${id}`);
-    setSel(await r.json());
+  const open = async (note: NoteView) => {
     setAnswer('');
     setActiveSeg(-1);
+    let view = note;
+
+    if (note.serverId) {
+      try {
+        const r = await fetch(`${API}/recordings/${note.serverId}`);
+        if (r.ok) {
+          const detail: Recording = await r.json();
+          view = {
+            ...note,
+            ...detail,
+            localId: note.localId,
+            serverId: note.serverId,
+            hasLocalAudio: note.hasLocalAudio,
+            hasServerAudio: !!detail.audioPath,
+            title: detail.title || note.title,
+          };
+        } else if (r.status === 404) {
+          view = {
+            ...note,
+            status: note.localId ? 'local' : 'error',
+            error: note.localId ? undefined : 'La nota ya no existe en el servidor',
+          };
+        }
+      } catch {
+        // Sin red: usamos la copia local si existe.
+      }
+    }
+
+    setSel(view);
+    await chooseAudio(view);
+    if (window.innerWidth < 900) {
+      setTimeout(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+    }
   };
 
   const close = () => {
     setSel(null);
     setAnswer('');
     setActiveSeg(-1);
+    setAudioUrl(null);
+    releaseObjectUrl();
     if (audioRef.current) audioRef.current.pause();
   };
 
-  const toggle = async (id: string) => {
-    if (sel?.id === id) {
+  const toggle = async (note: NoteView) => {
+    if (sel && (sel.localId === note.localId && sel.serverId === note.serverId)) {
       close();
       return;
     }
-    await open(id);
-    if (window.innerWidth < 900) {
-      setTimeout(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
-    }
+    await open(note);
   };
 
-  const transcribe = async () => {
-    if (!sel) return;
-    const r = await fetch(`${API}/recordings/${sel.id}/transcribe`, { method: 'POST' });
-    setSel(await r.json());
-    load();
+  const uploadBlob = async (local: LocalNote, blob: Blob): Promise<Recording> => {
+    const fd = new FormData();
+    fd.append('audio', blob, 'nota.webm');
+    fd.append('title', local.title);
+    const r = await fetch(`${API}/recordings`, { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(`No se pudo subir el audio (HTTP ${r.status})`);
+    return r.json();
+  };
+
+  const uploadAudioToServer = async (serverId: string, blob: Blob) => {
+    const fd = new FormData();
+    fd.append('audio', blob, 'nota.webm');
+    const r = await fetch(`${API}/recordings/${serverId}/audio`, { method: 'POST', body: fd });
+    if (!r.ok) throw new Error(`No se pudo re-subir el audio (HTTP ${r.status})`);
+    return r.json();
+  };
+
+  const analyze = async (note: NoteView) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setAnswer('');
+    let local: LocalNote | undefined;
+    try {
+      local = note.localId ? await getLocalNote(note.localId) : undefined;
+      let serverId = note.serverId || local?.serverId || null;
+      let detail: Recording | null = null;
+
+      if (!serverId) {
+        if (!local) throw new Error('Esta nota no está en este dispositivo. No hay audio para analizar.');
+        const blob = await getAudio(local.id);
+        if (!blob) throw new Error('El audio local ya fue liberado. No se puede analizar sin audio.');
+        local = { ...local, status: 'uploading', error: undefined };
+        await saveLocalNote(local);
+        await refreshLocals();
+        const created = await uploadBlob(local, blob);
+        serverId = created.id;
+        detail = created;
+        local = { ...local, serverId, status: created.status || 'queued' };
+        await saveLocalNote(local);
+        await refreshLocals();
+      }
+
+      const needsTranscribe = !note.transcript.length;
+      if (needsTranscribe) {
+        if (!note.hasServerAudio && !note.audioPath && local?.hasAudio) {
+          const blob = await getAudio(local.id);
+          if (!blob) throw new Error('El audio local ya fue liberado.');
+          detail = await uploadAudioToServer(serverId, blob);
+        }
+        const r = await fetch(`${API}/recordings/${serverId}/transcribe`, { method: 'POST' });
+        if (!r.ok) throw new Error(await r.text() || `Error al transcribir (HTTP ${r.status})`);
+        detail = await r.json();
+      }
+
+      if (!note.summary || needsTranscribe) {
+        const r = await fetch(`${API}/recordings/${serverId}/summarize`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ template: 'class' }),
+        });
+        if (!r.ok) throw new Error(await r.text() || `Error al resumir (HTTP ${r.status})`);
+        detail = await r.json();
+      }
+
+      if (!detail) {
+        const r = await fetch(`${API}/recordings/${serverId}`);
+        if (r.ok) detail = await r.json();
+      }
+
+      if (local && detail) {
+        local = {
+          ...local,
+          serverId,
+          title: detail.title || local.title,
+          status: detail.status || 'ready',
+          error: detail.error,
+          transcript: detail.transcript || local.transcript,
+          summary: detail.summary ?? local.summary,
+          mindmap: detail.mindmap ?? local.mindmap,
+        };
+        await saveLocalNote(local);
+        await refreshLocals();
+      }
+
+      await load();
+      if (detail && serverId) {
+        const view: NoteView = {
+          ...detail,
+          serverId,
+          localId: local?.id,
+          hasLocalAudio: !!local?.hasAudio,
+          hasServerAudio: !!detail.audioPath,
+        };
+        setSel(view);
+        await chooseAudio(view);
+      }
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo analizar la nota');
+      if (local) {
+        const failed = { ...local, status: 'error', error: e?.message || 'Error de análisis' };
+        await saveLocalNote(failed).catch(() => {});
+        await refreshLocals().catch(() => {});
+      }
+    } finally {
+      setBusy(false);
+    }
   };
 
   const summarize = async () => {
     if (!sel) return;
-    await fetch(`${API}/recordings/${sel.id}/summarize`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ template: 'meeting' })
-    });
-    open(sel.id);
-    load();
+    if (!sel.serverId) {
+      await analyze(sel);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch(`${API}/recordings/${sel.serverId}/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template: 'class' }),
+      });
+      if (!r.ok) throw new Error(await r.text() || `HTTP ${r.status}`);
+      const detail: Recording = await r.json();
+      await syncLocal(sel.serverId, detail);
+      setSel({ ...sel, ...detail, hasServerAudio: !!detail.audioPath });
+      await load();
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo resumir');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const syncLocal = async (serverId: string, detail: Recording) => {
+    const local = locals.find((l) => l.serverId === serverId);
+    if (!local) return;
+    const updated: LocalNote = {
+      ...local,
+      title: detail.title || local.title,
+      status: detail.status || local.status,
+      error: detail.error,
+      transcript: detail.transcript || local.transcript,
+      summary: detail.summary ?? local.summary,
+      mindmap: detail.mindmap ?? local.mindmap,
+    };
+    await saveLocalNote(updated);
+    await refreshLocals();
   };
 
   const ask = async () => {
-    if (!sel) return;
-    const r = await fetch(`${API}/recordings/${sel.id}/ask`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question })
-    });
-    const j = await r.json();
-    setAnswer(j.answer);
+    if (!sel?.serverId) {
+      setError('Analizá la nota primero para poder preguntarle a ApIA.');
+      return;
+    }
+    if (!question.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await fetch(`${API}/recordings/${sel.serverId}/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+      setAnswer(j.answer || 'Sin respuesta.');
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo preguntar a ApIA');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const remove = async () => {
     if (!sel) return;
-    if (!confirm(`¿Eliminar "${sel.title}"?`)) return;
-    await fetch(`${API}/recordings/${sel.id}`, { method: 'DELETE' });
-    setSel(null);
-    setAnswer('');
-    load();
+    if (!confirm(`¿Eliminar "${sel.title}"? Se borrará también el audio guardado en este dispositivo.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (sel.serverId) {
+        const r = await fetch(`${API}/recordings/${sel.serverId}`, { method: 'DELETE' });
+        if (!r.ok && r.status !== 404) throw new Error(`No se pudo eliminar del servidor (HTTP ${r.status})`);
+      }
+      if (sel.localId) await deleteLocalNote(sel.localId);
+      close();
+      await load();
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo eliminar la nota');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const releaseAudio = async () => {
+    if (!sel?.localId || !sel.hasLocalAudio) return;
+    if (!confirm('Se borrará el audio guardado en este dispositivo. La transcripción, el resumen y el mapa se conservan. ¿Continuar?')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteAudio(sel.localId);
+      const local = await getLocalNote(sel.localId);
+      if (local) {
+        await saveLocalNote({ ...local, hasAudio: false });
+        await refreshLocals();
+      }
+      setSel({ ...sel, hasLocalAudio: false });
+      setAudioUrl(null);
+      releaseObjectUrl();
+    } catch (e: any) {
+      setError(e?.message || 'No se pudo liberar el audio');
+    } finally {
+      setBusy(false);
+    }
   };
 
   const seek = (start: number) => {
@@ -664,33 +1066,76 @@ export default function App() {
           <h1>Lecmap</h1>
           <p className="tagline">Tus clases, en un mapa</p>
         </div>
-        <button className={`btn ${rec ? 'btn-recording' : 'btn-primary'}`} onClick={toggleRec}>
+        <button className={`btn ${rec ? 'btn-recording' : 'btn-primary'}`} onClick={toggleRec} disabled={busy}>
           {rec ? '■ Detener' : '● Grabar'}
         </button>
       </div>
 
       <div className="toolbar">
-        <input className="search-input" placeholder="Buscar en transcripciones..." value={q} onChange={(e) => setQ(e.target.value)} />
-        <button className="btn btn-secondary" onClick={load}>Buscar</button>
+        <input
+          className="search-input"
+          placeholder="Buscar en transcripciones..."
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <button className="btn btn-secondary" onClick={load} disabled={busy}>Buscar</button>
       </div>
+
+      {error && (
+        <div className="error-msg" style={{ marginBottom: 12 }}>
+          {error}
+          <button
+            className="btn btn-secondary"
+            style={{ marginLeft: 8, padding: '2px 8px' }}
+            onClick={() => setError(null)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {busy && <div style={{ color: 'var(--text2)', fontSize: 13, marginBottom: 8 }}>Procesando…</div>}
 
       <div className="main-grid">
         <div className="sidebar">
-          {list.length === 0 && <p style={{ color: 'var(--text2)', textAlign: 'center', marginTop: 40 }}>Sin grabaciones aún</p>}
-          {list.map((r) => (
-            <div
-              key={r.id}
-              className={`rec-item ${sel?.id === r.id ? 'active' : ''}`}
-              onClick={() => toggle(r.id)}
-              role="button"
-              tabIndex={0}
-              aria-expanded={sel?.id === r.id}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(r.id); } }}
-            >
-              <div className="rec-title">{r.title}</div>
-              <div className={`rec-status ${r.status}`}>{r.status}</div>
-            </div>
-          ))}
+          {!serverOk && locals.length === 0 && (
+            <p style={{ color: 'var(--text2)', textAlign: 'center', marginTop: 20 }}>
+              Sin conexión al servidor. Las notas locales se pueden grabar y analizar cuando vuelva la red.
+            </p>
+          )}
+          {list.length === 0 && serverOk && (
+            <p style={{ color: 'var(--text2)', textAlign: 'center', marginTop: 40 }}>Sin grabaciones aún</p>
+          )}
+          {list.map((note) => {
+            const active = !!sel && sel.localId === note.localId && sel.serverId === note.serverId;
+            return (
+              <div
+                key={note.serverId || note.localId || note.id}
+                className={`rec-item ${active ? 'active' : ''}`}
+                onClick={() => toggle(note)}
+                role="button"
+                tabIndex={0}
+                aria-expanded={active}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(note); } }}
+              >
+                <div className="rec-title">{note.title}</div>
+                <div className={`rec-status ${note.status}`}>
+                  {note.serverId ? note.status : 'local'}
+                  {note.hasLocalAudio ? ' · audio local' : ''}
+                </div>
+                {noteNeedsAnalysis(note) && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ marginTop: 8, padding: '4px 10px', fontSize: 12 }}
+                    disabled={busy}
+                    onClick={(e) => { e.stopPropagation(); analyze(note); }}
+                  >
+                    {note.serverId ? 'Analizar' : 'Analizar (subir audio)'}
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         <div className="detail" ref={detailRef}>
@@ -699,22 +1144,36 @@ export default function App() {
             <>
               <div className="detail-header">
                 <h2>{sel.title}</h2>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span className={`status-badge ${sel.status}`}>{sel.status}</span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span className={`status-badge ${sel.status}`}>{sel.serverId ? sel.status : 'local'}</span>
                   <button className="btn btn-secondary" onClick={close} title="Cerrar detalle">Cerrar ✕</button>
-                  <button className="btn btn-danger" onClick={remove}>Eliminar</button>
+                  <button className="btn btn-danger" onClick={remove} disabled={busy}>Eliminar nota</button>
                 </div>
               </div>
 
               {sel.error && <div className="error-msg">{sel.error}</div>}
 
               <div className="player">
-                <audio ref={audioRef} controls onTimeUpdate={onTimeUpdate} src={sel.audioPath ? `${API}/files/${sel.audioPath.split(/[\\/]/).pop()}` : undefined} />
+                {audioUrl
+                  ? <audio ref={audioRef} controls onTimeUpdate={onTimeUpdate} src={audioUrl} />
+                  : (
+                    <div className="summary-box" style={{ color: 'var(--text2)' }}>
+                      Audio no disponible en este dispositivo.
+                      {sel.hasLocalAudio && ' (el audio local no se pudo abrir)'}
+                    </div>
+                  )}
               </div>
 
-              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-                <button className="btn btn-primary" onClick={transcribe}>Transcribir</button>
-                <button className="btn btn-secondary" onClick={summarize}>Resumir</button>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                <button className="btn btn-primary" onClick={() => analyze(sel)} disabled={busy}>
+                  {sel.serverId ? 'Analizar de nuevo' : 'Analizar (subir audio)'}
+                </button>
+                {sel.transcript.length > 0 && (
+                  <button className="btn btn-secondary" onClick={summarize} disabled={busy}>Resumir</button>
+                )}
+                {sel.hasLocalAudio && (
+                  <button className="btn btn-secondary" onClick={releaseAudio} disabled={busy}>Liberar audio</button>
+                )}
               </div>
 
               {sel.transcript.length > 0 && (
@@ -746,8 +1205,13 @@ export default function App() {
               <div className="section">
                 <h3>Preguntar a ApIA</h3>
                 <div className="qa-section">
-                  <input className="qa-input" value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Preguntale a ApIA… ¿Cuáles fueron las conclusiones?" />
-                  <button className="btn btn-primary" onClick={ask}>Preguntar</button>
+                  <input
+                    className="qa-input"
+                    value={question}
+                    onChange={(e) => setQuestion(e.target.value)}
+                    placeholder="Preguntale a ApIA… ¿Cuáles fueron las conclusiones?"
+                  />
+                  <button className="btn btn-primary" onClick={ask} disabled={busy}>Preguntar</button>
                 </div>
                 {answer && <div className="answer-box">{answer}</div>}
               </div>

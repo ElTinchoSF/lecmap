@@ -49,18 +49,21 @@ npm install
 npm run dev  # :5173, VITE_API_URL=http://localhost:3001
 ```
 
-## Almacenamiento
+## Almacenamiento local-first
 
-- Las grabaciones subidas quedan en `backend/uploads/`. Al eliminar una nota desde la app se borra la fila de SQLite **y** su archivo de audio.
-- `backend/samples/` contiene los audios de demostración (TTS), separados de las grabaciones reales.
-- Para limpiar archivos huérfanos (por ejemplo, si Windows bloqueó un archivo al borrar):
+- **El audio vive en el dispositivo.** La web lo guarda en IndexedDB y Android en `filesDir` (`.m4a`). Grabar **no sube nada**.
+- Al tocar **Analizar**, el cliente sube el audio una sola vez para transcribir. Cuando STT termina bien, el backend guarda la transcripción, **borra su copia del audio** y deja `audioPath: null`.
+- La reproducción usa la copia local. Si una nota antigua todavía tiene audio en el servidor, se reproduce por `/files/:name`.
+- **Eliminar nota** borra la nota del servidor (si existe), el audio local y la fila local. **Liberar audio** borra solo el audio local y conserva transcripción, resumen y mapa.
+- Un limpiador del backend borra audios huérfanos al arrancar y cada 6 horas. También se puede ejecutar a mano:
 
 ```bash
 cd backend
 npm run cleanup
 ```
 
-- En Android, el `.m4a` local se borra después de subirlo. Si no hay red al detener, queda guardado y se reintenta al abrir la app.
+- `backend/samples/` contiene los audios de demostración (TTS), separados de las grabaciones reales.
+- En Android, si no hay red al tocar **Analizar**, la nota y su `.m4a` quedan guardados; se puede reintentar más tarde.
 
 ## APK Android
 

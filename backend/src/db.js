@@ -63,6 +63,8 @@ const q = {
   setStatus: db.prepare(`UPDATE recordings SET status = ?, error = ? WHERE id = ?`),
   setTranscriptMeta: db.prepare(`UPDATE recordings SET status = 'ready', error = NULL WHERE id = ?`),
   setSummary: db.prepare(`UPDATE recordings SET summary = ?, mindmap = ? WHERE id = ?`),
+  setAudioPath: db.prepare(`UPDATE recordings SET audio_path = ? WHERE id = ?`),
+  listAudioPaths: db.prepare(`SELECT audio_path FROM recordings WHERE audio_path IS NOT NULL`),
   insertSegment: db.prepare(`INSERT INTO segments (recording_id, idx, start, end, speaker, text) VALUES (?, ?, ?, ?, ?, ?)`),
   clearSegments: db.prepare(`DELETE FROM segments WHERE recording_id = ?`),
   getSegments: db.prepare(`SELECT * FROM segments WHERE recording_id = ? ORDER BY idx`),
@@ -107,6 +109,15 @@ export function saveTranscript(id, segments) {
 export function saveSummary(id, summary, mindmap) {
   q.setSummary.run(summary, JSON.stringify(mindmap ?? null), id);
   return getRecording(id);
+}
+
+export function setAudioPath(id, audioPath) {
+  q.setAudioPath.run(audioPath, id);
+  return getRecording(id);
+}
+
+export function listAudioPaths() {
+  return q.listAudioPaths.all().map((row) => row.audio_path).filter(Boolean);
 }
 
 export function deleteRecording(id) {

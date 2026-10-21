@@ -1,6 +1,6 @@
 # Contrato API de Lecmap v1
 
-Base: `http://localhost:3001` (Android emulador: `http://10.0.2.2:3001`, dispositivo: IP LAN)
+Base pública: `https://api.lecmap.app` (local: `http://localhost:3001`, Android emulador: `http://10.0.2.2:3001`, dispositivo: IP LAN).
 
 ## Modelos
 
@@ -22,12 +22,13 @@ Solo `timeline` y `steps` son cronológicos. El backend normaliza los formatos v
 
 ## Endpoints
 
-- `POST /recordings` multipart `audio` o json `{ title, youtubeUrl }` -> Recording queued
+- `POST /recordings` multipart `audio` o json `{ title, youtubeUrl }` -> Recording queued. Es el **único** momento en que el cliente sube audio, y solo al tocar **Analizar**.
+- `POST /recordings/:id/audio` multipart `audio` -> vuelve a subir el audio de una nota existente (reanálisis). Reemplaza el archivo anterior.
 - `GET /recordings?q=` lista + búsqueda keyword en transcript (`title` y `segments.text`)
 - `GET /recordings/:id` detalle
 - `DELETE /recordings/:id` borra registro, segmentos y archivo de audio
-- `GET /files/:name` sirve el audio subido (para el reproductor web/Android)
-- `POST /recordings/:id/transcribe` lanza STT (Groq `whisper-large-v3`)
+- `GET /files/:name` sirve el audio subido (para el reproductor web/Android; las notas analizadas ya no tienen audio en el servidor)
+- `POST /recordings/:id/transcribe` lanza STT (Groq `whisper-large-v3`). Si termina bien, guarda la transcripción, **borra el archivo de audio del servidor** y deja `audioPath: null`.
 - `POST /recordings/:id/summarize` `{ template?: general|meeting|class }` -> Recording con `{ summary, mindmap }`
 - `POST /recordings/:id/ask` `{ question }` -> `{ answer, citations: [{start,end}] }` (lo usa **ApIA**)
 - `GET /health` -> `{ ok: true, openai: boolean, stt, chat }`
@@ -35,6 +36,8 @@ Solo `timeline` y `steps` son cronológicos. El backend normaliza los formatos v
 ## Persistencia
 
 SQLite nativo (`node:sqlite`) en `backend/data/notas.db`. Tablas `recordings` y `segments`.
-Los audios de las grabaciones se guardan en `backend/uploads/`. Al borrar una grabación (`DELETE /recordings/:id`) se elimina también su archivo de audio. Los audios de demostración (TTS) están en `backend/samples/` y no se sirven por la API.
+Los audios se guardan en `backend/uploads/` solo hasta que la transcripción termina; después se borran y la nota queda con `audioPath: null`. El cliente conserva su copia local (IndexedDB en web, archivo `.m4a` en Android). Al borrar una grabación (`DELETE /recordings/:id`) también se elimina el archivo si todavía existe. Un limpiador al arrancar y cada 6 horas borra archivos de `uploads/` que ninguna fila de SQLite referencia. Los audios de demostración (TTS) están en `backend/samples/` y no se sirven por la API.
+
+CORS: por defecto acepta `https://lecmap.app`, `https://www.lecmap.app`, el Pages de GitHub y `localhost:5173`; se puede ajustar con `CORS_ORIGINS` (lista separada por comas). Los clientes nativos sin `Origin` también se aceptan.
 
 Errores: `{ error: string }` con 4xx/5xx. Todo en JSON UTF-8.

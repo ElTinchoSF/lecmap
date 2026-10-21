@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -92,7 +93,6 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
     val observer = LifecycleEventObserver { _, event ->
       if (event == Lifecycle.Event.ON_RESUME) {
         vm.refresh()
-        vm.retryPending()
       }
     }
     lifecycleOwner.lifecycle.addObserver(observer)
@@ -117,12 +117,11 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
 
   LaunchedEffect(Unit) {
     vm.refresh()
-    vm.retryPending()
   }
 
-  // El servicio sube la grabación aunque la app esté en segundo plano.
-  LaunchedEffect(RecordingState.uploadedId) {
-    if (RecordingState.consumeUploaded() != null) vm.refresh()
+  // El servicio guarda la nota local aunque la app esté en segundo plano.
+  LaunchedEffect(RecordingState.savedLocalId) {
+    if (RecordingState.consumeSaved() != null) vm.refresh()
   }
 
   LaunchedEffect(RecordingState.uploadError) {
@@ -188,8 +187,8 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
           rec = rec,
           active = vm.selected?.id == rec.id,
           busy = busy,
-          onClick = { vm.toggle(rec.id.orEmpty()) },
-          onAnalyze = { vm.analyze(rec.id.orEmpty()) },
+          onClick = { vm.toggle(rec) },
+          onAnalyze = { vm.analyze(rec) },
         )
       }
 
@@ -217,6 +216,27 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
       },
       dismissButton = {
         TextButton(onClick = { vm.cancelDelete() }) { Text("Cancelar", color = TextSecondary) }
+      },
+    )
+  }
+
+  vm.pendingRelease?.let { target ->
+    AlertDialog(
+      onDismissRequest = { vm.cancelReleaseAudio() },
+      containerColor = Surface1,
+      title = { Text("Liberar audio", color = TextPrimary) },
+      text = {
+        Text(
+          "Se borrará el audio de \"${target.title.orEmpty()}\" guardado en el teléfono. " +
+            "La transcripción, el resumen y el mapa se conservan. ¿Continuar?",
+          color = TextSecondary,
+        )
+      },
+      confirmButton = {
+        TextButton(onClick = { vm.confirmReleaseAudio() }) { Text("Liberar", color = Danger) }
+      },
+      dismissButton = {
+        TextButton(onClick = { vm.cancelReleaseAudio() }) { Text("Cancelar", color = TextSecondary) }
       },
     )
   }
@@ -394,6 +414,85 @@ private fun RecordingCard(
 }
 
 @Composable
+private fun AudioPlayer(localPath: String?, serverUrl: String?) {
+  val path = localPath ?: serverUrl
+  val isRemote = localPath == null && serverUrl != null
+  var player by remember(path) { mutableStateOf<MediaPlayer?>(null) }
+  var playing by remember(path) { mutableStateOf(false) }
+  var audioError by remember(path) { mutableStateOf<String?>(null) }
+
+  DisposableEffect(path) {
+    onDispose {
+      try {
+        player?.release()
+      } catch (_: Exception) {
+      }
+      player = null
+      playing = false
+    }
+  }
+
+  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Button(
+      onClick = {
+        val current = player
+        if (current == null) {
+          if (path == null) return@Button
+          val mp = MediaPlayer()
+          try {
+            mp.setDataSource(path)
+            mp.setOnPreparedListener {
+              it.start()
+              playing = true
+            }
+            mp.setOnCompletionListener {
+              playing = false
+              it.seekTo(0)
+            }
+            mp.setOnErrorListener { _, what, extra ->
+              audioError = "No se pudo reproducir el audio ($what/$extra)"
+              playing = false
+              true
+            }
+            mp.prepareAsync()
+            player = mp
+          } catch (e: Exception) {
+            audioError = e.message ?: "No se pudo abrir el audio"
+            try {
+              mp.release()
+            } catch (_: Exception) {
+            }
+          }
+        } else if (playing) {
+          current.pause()
+          playing = false
+        } else {
+          current.start()
+          playing = true
+        }
+      },
+      enabled = path != null,
+    ) { Text(if (playing) "Pausar" else "Reproducir") }
+
+    Spacer(Modifier.width(10.dp))
+    Text(
+      when {
+        path == null -> "Audio no disponible en este dispositivo"
+        isRemote -> "Reproduciendo desde el servidor"
+        else -> "Audio guardado en el teléfono"
+      },
+      color = if (path == null) TextSecondary else Accent,
+      fontSize = 11.sp,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+    )
+  }
+  audioError?.let {
+    Text(it, color = Danger, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+  }
+}
+
+@Composable
 private fun Detail(
   rec: RecordingDto,
   vm: AppViewModel,
@@ -418,21 +517,33 @@ private fun Detail(
     }
 
     Spacer(Modifier.height(8.dp))
+    AudioPlayer(
+      localPath = vm.localAudioPath(rec)?.absolutePath,
+      serverUrl = vm.serverAudioUrl(rec),
+    )
+    Spacer(Modifier.height(8.dp))
     Row(
       Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      Button(onClick = { vm.transcribe() }, enabled = !vm.busy) { Text("Transcribir") }
+      Button(onClick = { vm.analyze(rec) }, enabled = !vm.busy) { Text("Analizar") }
       OutlinedButton(
         onClick = { vm.summarize() },
-        enabled = !vm.busy,
+        enabled = !vm.busy && rec.transcript.orEmpty().isNotEmpty(),
         border = BorderStroke(1.dp, BorderCol),
       ) { Text("Resumir", color = TextPrimary) }
+      if (rec.hasLocalAudio) {
+        OutlinedButton(
+          onClick = { vm.requestReleaseAudio(rec) },
+          enabled = !vm.busy,
+          border = BorderStroke(1.dp, BorderCol),
+        ) { Text("Liberar audio", color = TextPrimary) }
+      }
       OutlinedButton(
         onClick = { vm.requestDelete(rec) },
         enabled = !vm.busy,
         border = BorderStroke(1.dp, Danger),
-      ) { Text("Eliminar", color = Danger) }
+      ) { Text("Eliminar nota", color = Danger) }
     }
 
     rec.error?.let {

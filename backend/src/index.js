@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
-import { readFile, writeFile, unlink } from 'fs/promises';
+import { readFile, writeFile, unlink, readdir, stat } from 'fs/promises';
 import { createReadStream } from 'fs';
 import { mkdirSync } from 'fs';
 import path from 'path';
@@ -13,11 +13,29 @@ import {
   setStatus,
   saveTranscript,
   saveSummary,
+  setAudioPath,
+  listAudioPaths,
   deleteRecording,
 } from './db.js';
 
 const app = Fastify({ logger: true });
-await app.register(cors, { origin: true });
+const defaultOrigins = [
+  'https://lecmap.app',
+  'https://www.lecmap.app',
+  'https://eltinchosf.github.io',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGINS || defaultOrigins.join(',')).split(',').map((o) => o.trim()).filter(Boolean),
+);
+await app.register(cors, {
+  origin(origin, cb) {
+    // Android y otros clientes nativos no envían Origin.
+    if (!origin || allowedOrigins.has(origin)) return cb(null, true);
+    cb(null, false);
+  },
+});
 await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } });
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
@@ -30,6 +48,23 @@ const id = () => Math.random().toString(36).slice(2, 10);
 
 const uploadsDir = path.resolve('uploads');
 mkdirSync(uploadsDir, { recursive: true });
+
+const MIME_BY_EXT = {
+  '.wav': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.mp4': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.flac': 'audio/flac',
+  '.webm': 'audio/webm',
+};
+
+function mimeFor(filePath) {
+  return MIME_BY_EXT[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+}
 
 /**
  * Borra el audio de una grabación. Solo acepta rutas dentro de uploads/ y
@@ -57,6 +92,36 @@ async function removeAudioFile(audioPath, log) {
   }
 }
 
+/**
+ * Borra archivos de uploads/ que ninguna fila de SQLite referencia. Esto cubre
+ * audios que quedaron huérfanos porque Windows bloqueó el borrado, o porque una
+ * subida se cortó antes de crear la nota.
+ */
+async function cleanupOrphanAudio(log) {
+  let files;
+  try {
+    files = await readdir(uploadsDir);
+  } catch {
+    return;
+  }
+  const referenced = new Set(listAudioPaths().map((p) => path.resolve(p)));
+  let removed = 0;
+  for (const name of files) {
+    const fp = path.join(uploadsDir, name);
+    if (referenced.has(path.resolve(fp))) continue;
+    try {
+      const info = await stat(fp);
+      if (!info.isFile()) continue;
+    } catch {
+      continue;
+    }
+    await removeAudioFile(fp, log);
+    removed += 1;
+  }
+  if (removed > 0) log?.info({ removed }, 'audios huérfanos eliminados');
+  return removed;
+}
+
 async function openaiChat(messages, { json = false } = {}) {
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
@@ -70,12 +135,7 @@ async function openaiChat(messages, { json = false } = {}) {
 
 async function openaiTranscribe(filePath) {
   const fileBuffer = await readFile(filePath);
-  const ext = path.extname(filePath).toLowerCase();
-  const mime = ext === '.wav' ? 'audio/wav'
-    : ext === '.mp3' ? 'audio/mpeg'
-    : ext === '.m4a' ? 'audio/mp4'
-    : ext === '.ogg' ? 'audio/ogg'
-    : 'audio/webm';
+  const mime = mimeFor(filePath);
   const form = new FormData();
   form.append('file', new Blob([fileBuffer], { type: mime }), path.basename(filePath));
   form.append('model', STT_MODEL);
@@ -335,6 +395,31 @@ app.post('/recordings', async (req) => {
   return createRecording({ id: id(), title, audioPath, youtubeUrl, createdAt: now() });
 });
 
+// Vuelve a subir el audio de una nota existente (por ejemplo, para reanalizarla
+// después de que el servidor borró su copia tras transcribir).
+app.post('/recordings/:id/audio', async (req, reply) => {
+  const r = getRecording(req.params.id);
+  if (!r) return reply.code(404).send({ error: 'not found' });
+  if (!req.isMultipart()) return reply.code(400).send({ error: 'se esperaba multipart/form-data' });
+
+  let part;
+  try {
+    part = await req.file();
+  } catch (e) {
+    return reply.code(400).send({ error: e.message });
+  }
+  if (!part) return reply.code(400).send({ error: 'falta el archivo de audio' });
+
+  const buf = await part.toBuffer();
+  if (buf.length === 0) return reply.code(400).send({ error: 'audio vacío' });
+  const safeName = path.basename(part.filename || 'audio.webm').replace(/[^\w.\-]/g, '_');
+  const fp = path.join(uploadsDir, `${id()}_${safeName}`);
+  await writeFile(fp, buf);
+  if (r.audioPath) await removeAudioFile(r.audioPath, req.log);
+  setAudioPath(r.id, fp);
+  return getRecording(r.id);
+});
+
 app.get('/recordings', async (req) => {
   return listRecordings(req.query?.q || '');
 });
@@ -361,16 +446,10 @@ app.get('/files/:name', async (req, reply) => {
   const fp = path.join(uploadsDir, name);
   if (!fp.startsWith(uploadsDir)) return reply.code(400).send({ error: 'invalid path' });
   try {
-    const stat = await import('fs/promises').then((m) => m.stat(fp));
-    reply.header('Content-Length', stat.size);
+    const info = await stat(fp);
+    reply.header('Content-Length', info.size);
     reply.header('Accept-Ranges', 'bytes');
-    const ext = path.extname(name).toLowerCase();
-    const mime = ext === '.wav' ? 'audio/wav'
-      : ext === '.mp3' ? 'audio/mpeg'
-      : ext === '.m4a' ? 'audio/mp4'
-      : ext === '.ogg' ? 'audio/ogg'
-      : 'audio/webm';
-    reply.type(mime);
+    reply.type(mimeFor(name));
     return reply.send(createReadStream(fp));
   } catch {
     return reply.code(404).send({ error: 'file not found' });
@@ -392,7 +471,12 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
       speaker: `SPEAKER_${String(i % 2).padStart(2, '0')}`,
       text: s.text.trim(),
     }));
-    return saveTranscript(r.id, segments);
+    const saved = saveTranscript(r.id, segments);
+    // La transcripción ya está en SQLite: el servidor no necesita conservar el
+    // audio. El cliente mantiene su copia local para reproducir la clase.
+    await removeAudioFile(r.audioPath, req.log);
+    setAudioPath(r.id, null);
+    return { ...saved, audioPath: null };
   } catch (e) {
     console.error('[transcribe] error:', e.message);
     return setStatus(r.id, 'error', e.message);
@@ -491,4 +575,8 @@ app.post('/recordings/:id/ask', async (req, reply) => {
 });
 
 const port = Number(process.env.PORT || 3001);
+await cleanupOrphanAudio(app.log);
+setInterval(() => {
+  cleanupOrphanAudio(app.log).catch((e) => app.log.warn({ err: e }, 'cleanup de audios falló'));
+}, 6 * 60 * 60 * 1000).unref();
 await app.listen({ port, host: '0.0.0.0' });

@@ -33,6 +33,11 @@ data class RecordingDto(
   val summary: String? = null,
   val mindmap: MindmapDto? = null,
   val transcript: List<SegmentDto>? = null,
+  // Campos locales: no vienen del backend, los completa la app al mezclar
+  // la nota del servidor con su copia en el teléfono.
+  val localId: String? = null,
+  val serverId: String? = null,
+  val hasLocalAudio: Boolean = false,
 )
 
 data class AskReq(val question: String)
@@ -51,6 +56,13 @@ interface Api {
   suspend fun upload(
     @Part audio: MultipartBody.Part,
     @Part("title") title: RequestBody,
+  ): RecordingDto
+
+  @Multipart
+  @POST("recordings/{id}/audio")
+  suspend fun uploadAudio(
+    @Path("id") id: String,
+    @Part audio: MultipartBody.Part,
   ): RecordingDto
 
   @POST("recordings/{id}/transcribe")
