@@ -1123,7 +1123,7 @@ export default function App() {
                   {note.serverId ? note.status : 'local'}
                   {note.hasLocalAudio ? ' · audio local' : ''}
                 </div>
-                {noteNeedsAnalysis(note) && (
+                {noteNeedsAnalysis(note) && (note.serverId || note.hasLocalAudio) && (
                   <button
                     className="btn btn-secondary"
                     style={{ marginTop: 8, padding: '4px 10px', fontSize: 12 }}
@@ -1165,9 +1165,15 @@ export default function App() {
               </div>
 
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-                <button className="btn btn-primary" onClick={() => analyze(sel)} disabled={busy}>
-                  {sel.serverId ? 'Analizar de nuevo' : 'Analizar (subir audio)'}
-                </button>
+                {sel.serverId || sel.hasLocalAudio ? (
+                  <button className="btn btn-primary" onClick={() => analyze(sel)} disabled={busy}>
+                    {sel.serverId ? 'Analizar de nuevo' : 'Analizar (subir audio)'}
+                  </button>
+                ) : (
+                  <span style={{ color: 'var(--text2)', fontSize: 13, alignSelf: 'center' }}>
+                    Audio liberado: no queda audio para reanalizar.
+                  </span>
+                )}
                 {sel.transcript.length > 0 && (
                   <button className="btn btn-secondary" onClick={summarize} disabled={busy}>Resumir</button>
                 )}
