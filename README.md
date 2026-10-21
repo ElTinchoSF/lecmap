@@ -17,11 +17,11 @@ Grabá una clase, transcribila, resumila y convertí el contenido en un mapa de 
 ## Web publicada
 
 - Repo: <https://github.com/ElTinchoSF/lecmap>
-- GitHub Pages: <https://eltinchosf.github.io/lecmap/>
+- Web: <https://lecmap.app> (también <https://www.lecmap.app> y <https://eltinchosf.github.io/lecmap/>)
+- API: <https://api.lecmap.app>
 - El workflow `.github/workflows/deploy-web.yml` compila `web/` y publica `dist/` en cada push a `main`.
-- La URL del backend se configura en la variable de repositorio `VITE_API_URL`.
-
-Plan de dominio: `lecmap.app` para la web y `api.lecmap.app` para el backend. Mientras el dominio no esté configurado, la web usa la URL de Pages y el túnel temporal de Cloudflare.
+- La URL del backend se configura en la variable de repositorio `VITE_API_URL=https://api.lecmap.app`; hay que volver a desplegar si cambia.
+- `lecmap.app` es el dominio personalizado de GitHub Pages (DNS en Cloudflare, registros A a GitHub Pages y CNAME `www`). `api.lecmap.app` es un túnel nombrado de Cloudflare hacia `http://127.0.0.1:3001`.
 
 ## MVP v1
 
@@ -77,19 +77,25 @@ La app tiene un selector de servidor (tocar "Cambiar servidor" arriba): acepta `
 
 ### Usar sin USB (Wi-Fi de otra red o datos móviles)
 
-Si el teléfono no está en la misma red que la PC, se expone el backend con un túnel HTTPS de Cloudflare (gratis, sin cuenta):
+El backend ya está publicado en **`https://api.lecmap.app`** mediante un túnel **nombrado** de Cloudflare (no cambia de URL). En la app, **Cambiar servidor** debe apuntar a `https://api.lecmap.app/`.
+
+Para levantarlo en la PC:
 
 ```powershell
-cd android
-powershell -ExecutionPolicy Bypass -File .\iniciar-tunel.ps1
+# 1) backend con reinicio automático
+cd backend
+powershell -ExecutionPolicy Bypass -File .\start-backend.ps1
+
+# 2) túnel nombrado (en otra consola)
+& "$env:LOCALAPPDATA\AndroidDev\cloudflared.exe" tunnel run lecmap
 ```
 
-Dejá esa ventana abierta. Copiá la URL `https://....trycloudflare.com` que aparece y pegala en la app con **Cambiar servidor**. Funciona con cualquier Wi-Fi y con datos móviles.
+Dejá ambas ventanas abiertas. El túnel usa `%USERPROFILE%\.cloudflared\config.yml` y enruta `api.lecmap.app` a `http://127.0.0.1:3001`.
 
-- La URL es **temporal**: cambia cada vez que se reinicia el túnel. Si cambia, actualizala en la app.
 - La PC tiene que quedar encendida con el backend y el túnel corriendo.
-- La URL es pública (sin login): no la compartas y cortá el túnel (Ctrl+C) al terminar.
-- Cloudflare corta respuestas de más de ~100 s. Para clases muy largas, conviene dividir la grabación o usar la PC en la misma red.
+- Si el túnel se reinicia, la URL sigue siendo `https://api.lecmap.app`.
+- El túnel no tiene login propio: cualquiera con la URL puede llamar a la API. No la compartas; más adelante se puede agregar un token.
+- Para la misma red se puede usar directamente `http://IP_DE_LA_PC:3001/` (más rápido y sin límite de tiempo del túnel).
 
 Para la misma red, el puerto 3001 debe estar permitido en el firewall de Windows. En una consola **como administrador**:
 

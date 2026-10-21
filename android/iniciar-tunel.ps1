@@ -1,6 +1,6 @@
-# Levanta el backend (si hace falta) y un túnel público de Cloudflare.
-# Dejá esta ventana abierta. Copiá la URL https://....trycloudflare.com que
-# aparece y pegala en la app: "Cambiar servidor".
+# Levanta el backend (si hace falta) y el túnel nombrado de Cloudflare.
+# La URL pública estable es https://api.lecmap.app
+# Dejá esta ventana abierta.
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path $PSScriptRoot -Parent
@@ -19,6 +19,7 @@ try {
 }
 
 Write-Host ""
-Write-Host "Iniciando túnel. La URL aparece en las próximas líneas:"
+Write-Host "Iniciando túnel nombrado 'lecmap'..."
+Write-Host "API pública: https://api.lecmap.app"
 Write-Host ""
-& $cloudflared tunnel --url http://127.0.0.1:3001 --no-autoupdate
+& $cloudflared tunnel run lecmap --no-autoupdate
