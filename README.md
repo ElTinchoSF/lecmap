@@ -14,6 +14,15 @@ Grabá una clase, transcribila, resumila y convertí el contenido en un mapa de 
 - `android/` Kotlin nativo con Jetpack Compose. Grabación con MediaRecorder, subida al backend con Retrofit, lista, detalle, resumen, Q&A y los mismos 7 diseños de mapa de ideas que la web.
 - `docs/API.md` contrato compartido.
 
+## Web publicada
+
+- Repo: <https://github.com/ElTinchoSF/lecmap>
+- GitHub Pages: <https://eltinchosf.github.io/lecmap/>
+- El workflow `.github/workflows/deploy-web.yml` compila `web/` y publica `dist/` en cada push a `main`.
+- La URL del backend se configura en la variable de repositorio `VITE_API_URL`.
+
+Plan de dominio: `lecmap.app` para la web y `api.lecmap.app` para el backend. Mientras el dominio no esté configurado, la web usa la URL de Pages y el túnel temporal de Cloudflare.
+
 ## MVP v1
 
 1. Crear grabación (audio o URL YouTube) -> `POST /recordings`
