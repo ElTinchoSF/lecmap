@@ -1,0 +1,40 @@
+# Secretos y datos locales
+backend/.env
+backend/data/
+backend/uploads/
+backend/samples/
+*.db
+*.db-shm
+*.db-wal
+
+# Dependencias y builds
+**/node_modules/
+web/dist/
+web/dist-ssr/
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/build.log
+android/tunnel.log
+android/*.apk
+android/app/release/
+
+# Entornos locales
+web/.env.local
+web/.env.*.local
+.env.local
+.env.*.local
+
+# Artefactos temporales
+*.log
+dryrun-stderr.txt
+dryrun.json
+setup-stderr.txt
+setup.json
+
+# Sistema
+desktop.ini
+Thumbs.db
+.DS_Store

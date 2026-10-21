@@ -1,0 +1,17 @@
+{
+  "name": "lecmap-backend",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js",
+    "cleanup": "node cleanup.mjs"
+  },
+  "dependencies": {
+    "@fastify/cors": "^8.5.0",
+    "@fastify/multipart": "^8.3.0",
+    "dotenv": "^18.0.8",
+    "dotv": "^0.0.1",
+    "fastify": "^4.28.0"
+  }
+}
