@@ -10,9 +10,11 @@ try {
   Invoke-RestMethod 'http://127.0.0.1:3001/health' -TimeoutSec 3 | Out-Null
   Write-Host "Backend activo en :3001"
 } catch {
-  Write-Host "El backend no responde. Iniciando..."
-  Start-Process -FilePath "node" -ArgumentList "src/index.js" `
-    -WorkingDirectory (Join-Path $root 'backend') -WindowStyle Minimized
+  Write-Host "El backend no responde. Iniciando con reinicio automático..."
+  $backendScript = Join-Path $root 'backend\start-backend.ps1'
+  Start-Process -FilePath "powershell" `
+    -ArgumentList "-ExecutionPolicy Bypass -File `"$backendScript`"" `
+    -WindowStyle Hidden
   Start-Sleep -Seconds 3
 }
 
