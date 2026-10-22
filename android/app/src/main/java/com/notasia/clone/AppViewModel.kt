@@ -61,11 +61,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
    */
   fun refresh() {
     viewModelScope.launch {
-      val locals = withContext(Dispatchers.IO) { store.list() }
       try {
         val server = withContext(Dispatchers.IO) { api.list(query) }
+        withContext(Dispatchers.IO) {
+          for (dto in server) dto.id?.let { store.updateFromServer(it, dto) }
+        }
+        val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, server)
       } catch (e: Exception) {
+        val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, emptyList())
         if (locals.isEmpty()) error = friendly(e)
       }
@@ -395,7 +399,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     hasLocalAudio = local.audioFile?.let { File(it).exists() } == true,
     title = title?.takeIf { it.isNotBlank() } ?: local.title,
     status = status ?: local.status,
-    error = error ?: local.error,
+    error = if (!summary.isNullOrBlank()) null else (error ?: local.error),
     summary = summary ?: local.summary,
     mindmap = mindmap ?: local.mindmap,
     transcript = transcript?.takeIf { it.isNotEmpty() } ?: local.transcript,
