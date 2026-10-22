@@ -1,6 +1,7 @@
 package com.notasia.clone
 
 import android.Manifest
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -33,6 +34,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -53,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -60,10 +64,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import java.io.File
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -184,23 +190,22 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
       }
 
       items(vm.list, key = { it.id ?: it.hashCode().toString() }) { rec ->
-        RecordingCard(
-          rec = rec,
-          active = vm.selected?.id == rec.id,
-          busy = busy,
-          onClick = { vm.toggle(rec) },
-          onAnalyze = { vm.analyze(rec) },
-        )
-      }
-
-      vm.selected?.let { sel ->
-        item(key = "detail-${sel.id}") {
-          Detail(
-            rec = sel,
-            vm = vm,
-            question = question,
-            onQuestion = { question = it },
+        Column {
+          RecordingCard(
+            rec = rec,
+            active = vm.selected?.id == rec.id,
+            busy = busy,
+            onClick = { vm.toggle(rec) },
+            onAnalyze = { vm.analyze(rec) },
           )
+          if (vm.selected?.id == rec.id) {
+            Detail(
+              rec = vm.selected ?: rec,
+              vm = vm,
+              question = question,
+              onQuestion = { question = it },
+            )
+          }
         }
       }
     }
@@ -530,17 +535,7 @@ private fun Detail(
   onQuestion: (String) -> Unit,
 ) {
   Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
-    Text(rec.title.orEmpty(), color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-    Spacer(Modifier.height(8.dp))
-
-    Row(verticalAlignment = Alignment.CenterVertically) {
-      Text(
-        rec.status.orEmpty(),
-        color = statusColor(rec.status),
-        fontSize = 11.sp,
-        fontWeight = FontWeight.Bold,
-      )
-      Spacer(Modifier.weight(1f))
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
       OutlinedButton(onClick = { vm.close() }, border = BorderStroke(1.dp, BorderCol)) {
         Text("Cerrar ✕", color = TextPrimary)
       }
@@ -607,11 +602,7 @@ private fun Detail(
     val segments = rec.transcript.orEmpty()
     if (segments.isNotEmpty()) {
       Spacer(Modifier.height(18.dp))
-      SectionTitle("Transcripción")
-      segments.forEach { segment ->
-        TranscriptRow(segment)
-        Spacer(Modifier.height(6.dp))
-      }
+      TranscriptCard(title = rec.title.orEmpty(), segments = segments)
     }
 
     Spacer(Modifier.height(18.dp))
@@ -651,36 +642,86 @@ private fun Detail(
 }
 
 @Composable
-private fun TranscriptRow(segment: SegmentDto) {
-  Surface(
-    modifier = Modifier.fillMaxWidth(),
-    color = Surface1,
-    shape = RoundedCornerShape(10.dp),
-    border = BorderStroke(1.dp, BorderCol),
-  ) {
-    Column(Modifier.padding(10.dp)) {
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-          fmtTime(segment.start ?: 0.0),
-          color = Accent,
-          fontSize = 11.sp,
-          fontWeight = FontWeight.Bold,
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-          segment.speaker.orEmpty(),
-          color = Accent2,
-          fontSize = 11.sp,
-          fontWeight = FontWeight.Bold,
-        )
-      }
-      Spacer(Modifier.height(3.dp))
+private fun TranscriptCard(title: String, segments: List<SegmentDto>) {
+  val context = LocalContext.current
+  var exportTimes by remember { mutableStateOf(true) }
+
+  fun shareTranscript() {
+    val extension = if (exportTimes) "csv" else "txt"
+    val body = transcriptCsv(segments, exportTimes)
+    val dir = File(context.cacheDir, "exports").apply { mkdirs() }
+    dir.listFiles()?.forEach { it.delete() }
+    val safeTitle = title
+      .replace(Regex("[\\\\/:*?\"<>|]+"), "_")
+      .trim()
+      .take(80)
+      .ifBlank { "transcripcion" }
+    val file = File(dir, "$safeTitle.$extension")
+    file.writeText(body, Charsets.UTF_8)
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    val intent = Intent(Intent.ACTION_SEND).apply {
+      type = if (exportTimes) "text/csv" else "text/plain"
+      putExtra(Intent.EXTRA_STREAM, uri)
+      putExtra(Intent.EXTRA_SUBJECT, title.ifBlank { "Transcripción" })
+      clipData = ClipData.newRawUri("transcripcion", uri)
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Compartir transcripción"))
+  }
+
+  Column(Modifier.fillMaxWidth()) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
       Text(
-        segment.text.orEmpty(),
-        color = TextSecondary,
+        "Transcripción",
+        color = TextPrimary,
         fontSize = 13.sp,
-        lineHeight = 18.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.weight(1f),
       )
+      Checkbox(checked = exportTimes, onCheckedChange = { exportTimes = it })
+      Text("Tiempos", color = TextSecondary, fontSize = 11.sp)
+      Spacer(Modifier.width(4.dp))
+      OutlinedButton(
+        onClick = { shareTranscript() },
+        enabled = segments.isNotEmpty(),
+        border = BorderStroke(1.dp, BorderCol),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+      ) { Text("Exportar", color = TextPrimary, fontSize = 12.sp) }
+    }
+
+    Spacer(Modifier.height(6.dp))
+    Surface(
+      modifier = Modifier.fillMaxWidth(),
+      color = Surface1,
+      shape = RoundedCornerShape(12.dp),
+      border = BorderStroke(1.dp, BorderCol),
+    ) {
+      Column {
+        segments.forEachIndexed { index, segment ->
+          Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+              fmtTimestamp(segment.start ?: 0.0),
+              color = Accent,
+              fontSize = 11.sp,
+              fontFamily = FontFamily.Monospace,
+              fontWeight = FontWeight.Bold,
+              modifier = Modifier.width(74.dp),
+            )
+            Column(Modifier.weight(1f)) {
+              segment.speaker?.takeIf { it.isNotBlank() }?.let { speaker ->
+                Text(speaker, color = Accent2, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+              }
+              Text(
+                segment.text.orEmpty(),
+                color = TextSecondary,
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+              )
+            }
+          }
+          if (index < segments.lastIndex) HorizontalDivider(color = BorderCol)
+        }
+      }
     }
   }
 }
@@ -718,7 +759,23 @@ private fun statusColor(status: String?): Color = when (status) {
   else -> TextSecondary
 }
 
-private fun fmtTime(seconds: Double): String {
-  val total = seconds.toInt()
-  return String.format(Locale.getDefault(), "%d:%02d", total / 60, total % 60)
+private fun fmtTimestamp(seconds: Double): String {
+  val total = seconds.toInt().coerceAtLeast(0)
+  return String.format(Locale.US, "%02d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
+}
+
+private fun csvCell(value: String): String = "\"" + value.replace("\"", "\"\"") + "\""
+
+private fun transcriptCsv(segments: List<SegmentDto>, withTimes: Boolean): String {
+  if (!withTimes) return segments.joinToString("\n") { it.text.orEmpty() }
+  return buildString {
+    append('\uFEFF')
+    append("\"Tiempo\",\"Transcripción\"\r\n")
+    for (segment in segments) {
+      append(csvCell(fmtTimestamp(segment.start ?: 0.0)))
+      append(',')
+      append(csvCell(segment.text.orEmpty()))
+      append("\r\n")
+    }
+  }
 }

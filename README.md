@@ -30,7 +30,8 @@ Grabá una clase, transcribila, resumila y convertí el contenido en un mapa de 
 3. Resumir + mapa de ideas adaptativo -> `POST /recordings/:id/summarize`. La IA elige el diseño según el contenido: mapa de temas (`topics`), tabla comparativa (`comparison`), pasos (`steps`), línea de tiempo (`timeline`), glosario (`glossary`), causa-efecto (`cause`) o problema-solución (`solution`). Sin límite de ramas. En clases largas el resumen corre en segundo plano y por bloques para respetar el límite gratuito de Groq (8.000 tokens/minuto); la nota queda en `summarizing` hasta que termina (puede tardar unos minutos).
 4. Preguntar a ApIA -> `POST /recordings/:id/ask`
 5. Buscar por keyword -> `GET /recordings?q=`
-6. Compartir por link firmado (v1 simple)
+6. Exportar la transcripción a CSV (tiempo + texto) o TXT (solo texto), desde la web o Android
+7. Compartir por link firmado (v1 simple)
 
 Fuera de v1: auto-join calendario, Wear OS, cifrado E2E.
 

@@ -73,10 +73,12 @@ type NoteView = Recording & {
   hasServerAudio: boolean;
 };
 
-function fmtTime(s: number) {
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${String(sec).padStart(2, '0')}`;
+function fmtTimestamp(s: number) {
+  const total = Math.max(0, Math.floor(s || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  return [h, m, sec].map((v) => String(v).padStart(2, '0')).join(':');
 }
 
 const str = (v: any) => (v === undefined || v === null ? '' : String(v).trim());
@@ -693,6 +695,7 @@ export default function App() {
   const [tokenDraft, setTokenDraft] = useState(apiToken);
   const [showSettings, setShowSettings] = useState(false);
   const [needsToken, setNeedsToken] = useState(false);
+  const [exportTimes, setExportTimes] = useState(true);
   const [q, setQ] = useState('');
   const [sel, setSel] = useState<NoteView | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -1134,6 +1137,31 @@ export default function App() {
     }
   };
 
+  const exportTranscript = () => {
+    if (!sel || sel.transcript.length === 0) return;
+    const csvCell = (value: string) => `"${String(value).replace(/"/g, '""')}"`;
+    let body: string;
+    if (exportTimes) {
+      const rows = ['"Tiempo","Transcripción"'];
+      for (const s of sel.transcript) {
+        rows.push(`${csvCell(fmtTimestamp(s.start))},${csvCell(s.text)}`);
+      }
+      body = '\uFEFF' + rows.join('\r\n') + '\r\n';
+    } else {
+      body = sel.transcript.map((s) => s.text).join('\n');
+    }
+    const blob = new Blob([body], { type: exportTimes ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const safeTitle = (sel.title || 'transcripcion').replace(/[\\/:*?"<>|]+/g, '_').trim().slice(0, 80) || 'transcripcion';
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${safeTitle}.${exportTimes ? 'csv' : 'txt'}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const saveToken = () => {
     const t = tokenDraft.trim();
     if (t) localStorage.setItem(TOKEN_KEY, t);
@@ -1332,14 +1360,32 @@ export default function App() {
               </div>
 
               {sel.transcript.length > 0 && (
-                <div className="transcript">
-                  {sel.transcript.map((s, i) => (
-                    <div key={i} className={`transcript-segment ${activeSeg === i ? 'active' : ''}`} onClick={() => seek(s.start)}>
-                      <div className="segment-time">{fmtTime(s.start)} - {fmtTime(s.end)}</div>
-                      <div className="segment-speaker">{s.speaker}</div>
-                      <div className="segment-text">{s.text}</div>
+                <div className="section">
+                  <div className="transcript-toolbar">
+                    <h3>Transcripción</h3>
+                    <div className="transcript-actions">
+                      <label className="transcript-check">
+                        <input
+                          type="checkbox"
+                          checked={exportTimes}
+                          onChange={(e) => setExportTimes(e.target.checked)}
+                        />
+                        Tiempos
+                      </label>
+                      <button className="btn btn-secondary" onClick={exportTranscript}>Exportar</button>
                     </div>
-                  ))}
+                  </div>
+                  <div className="transcript-card">
+                    {sel.transcript.map((s, i) => (
+                      <div key={i} className={`transcript-line ${activeSeg === i ? 'active' : ''}`} onClick={() => seek(s.start)}>
+                        <div className="transcript-time">{fmtTimestamp(s.start)}</div>
+                        <div className="transcript-text">
+                          {s.speaker && <span className="transcript-speaker">{s.speaker}</span>}
+                          {s.text}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
