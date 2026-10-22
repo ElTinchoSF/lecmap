@@ -15,6 +15,7 @@ import {
   saveSummary,
   setAudioPath,
   listAudioPaths,
+  resetInterrupted,
   deleteRecording,
 } from './db.js';
 
@@ -122,11 +123,50 @@ async function cleanupOrphanAudio(log) {
   return removed;
 }
 
-async function openaiChat(messages, { json = false } = {}) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// El plan gratuito de Groq limita gpt-oss-120b a 8000 tokens por minuto (TPM).
+// Llevamos una ventana de 60 s y esperamos antes de mandar otro pedido grande.
+const chatWindow = [];
+const TPM_BUDGET = 7000;
+
+function estimateTokens(text) {
+  return Math.ceil(String(text || '').length / 3.5);
+}
+
+function estimateMessagesTokens(messages) {
+  return messages.reduce((n, m) => n + estimateTokens(m.content) + 8, 0);
+}
+
+async function paceChat(messages, maxTokens) {
+  const estimated = estimateMessagesTokens(messages) + maxTokens;
+  if (estimated > TPM_BUDGET) {
+    throw new Error(`Pedido demasiado grande (${estimated} tokens); hay que dividir la transcripción`);
+  }
+  for (;;) {
+    const now = Date.now();
+    while (chatWindow.length && now - chatWindow[0].at > 60_000) chatWindow.shift();
+    const used = chatWindow.reduce((n, u) => n + u.tokens, 0);
+    if (used + estimated <= TPM_BUDGET) {
+      chatWindow.push({ at: now, tokens: estimated });
+      return;
+    }
+    const wait = 60_000 - (now - chatWindow[0].at) + 500;
+    await sleep(Math.max(wait, 1000));
+  }
+}
+
+async function openaiChat(messages, { json = false, maxTokens = 3000 } = {}) {
+  await paceChat(messages, maxTokens);
   const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
-    body: JSON.stringify({ model: CHAT_MODEL, messages, ...(json ? { response_format: { type: 'json_object' } } : {}) }),
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      messages,
+      max_completion_tokens: maxTokens,
+      ...(json ? { response_format: { type: 'json_object' } } : {}),
+    }),
   });
   if (!res.ok) throw new Error(`AI chat error: ${res.status} ${await res.text()}`);
   const j = await res.json();
@@ -483,71 +523,229 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
   }
 });
 
-app.post('/recordings/:id/summarize', async (req, reply) => {
-  const r = getRecording(req.params.id);
-  if (!r) return reply.code(404).send({ error: 'not found' });
-  if (!OPENAI_KEY) return reply.code(500).send({ error: 'OPENAI_API_KEY no configurada' });
+// ---------- Resumen de clases largas ----------
+// Groq (plan gratis) limita gpt-oss-120b a 8000 tokens por minuto. Una clase
+// de 35 min no entra en un solo pedido: partimos la transcripción, resumimos
+// cada bloque y hacemos una síntesis final con el mapa de ideas.
 
-  const template = req.body?.template || 'general';
-  const transcriptText = r.transcript.map((s) => `[${s.speaker}] ${s.text}`).join('\n');
-  if (!transcriptText) return reply.code(400).send({ error: 'La grabación no tiene transcripción' });
+const summaryJobs = new Set();
+const MAX_CHUNK_CHARS = 10_000;
 
+function transcriptChunks(
+  segments,
+  maxChars = MAX_CHUNK_CHARS,
+  format = (s) => `[${s.speaker}] ${s.text}`,
+) {
+  const chunks = [];
+  let current = [];
+  let length = 0;
+  for (const s of segments) {
+    const line = format(s);
+    if (length + line.length + 1 > maxChars && current.length > 0) {
+      chunks.push(current.join('\n'));
+      current = [];
+      length = 0;
+    }
+    current.push(line);
+    length += line.length + 1;
+  }
+  if (current.length > 0) chunks.push(current.join('\n'));
+  return chunks;
+}
+
+const CHUNK_SYSTEM_PROMPT =
+  'Sos un asistente que resume clases en español. Devolvé SOLO JSON con esta forma: ' +
+  '{"summary": string, "points": [string]}. ' +
+  'El summary debe tener 2 o 3 frases. En points poné hasta 6 ideas concretas del fragmento ' +
+  '(datos, definiciones, ejemplos, conclusiones). No inventes contenido que no esté en el texto.';
+
+async function summarizeChunk(chunk, index, total) {
+  const messages = [
+    { role: 'system', content: CHUNK_SYSTEM_PROMPT },
+    { role: 'user', content: `Fragmento ${index + 1} de ${total}:\n\n${chunk}` },
+  ];
+  let raw;
   try {
+    raw = await openaiChat(messages, { json: true, maxTokens: 700 });
+  } catch (e) {
+    if (/413|429|demasiado grande/i.test(e.message)) throw e;
+    console.warn(`[summarize] bloque ${index + 1} JSON falló, reintento simple:`, e.message.slice(0, 140));
+    raw = await openaiChat(messages, { json: false, maxTokens: 700 });
+  }
+  const parsed = parseJsonLoose(raw);
+  return { summary: str(parsed.summary), points: strList(parsed.points) };
+}
+
+/** Si un bloque igual es demasiado grande, lo parte al medio y reintenta. */
+async function summarizeChunkSafe(chunk, index, total, depth = 0) {
+  try {
+    return [await summarizeChunk(chunk, index, total)];
+  } catch (e) {
+    if (depth < 3 && /413|429|demasiado grande/i.test(e.message) && chunk.length > 4000) {
+      const mid = chunk.lastIndexOf('\n', Math.floor(chunk.length / 2));
+      const cut = mid > 1500 ? mid : Math.floor(chunk.length / 2);
+      console.warn(`[summarize] bloque ${index + 1} demasiado grande; lo divido (nivel ${depth + 1})`);
+      await sleep(2000);
+      return [
+        ...(await summarizeChunkSafe(chunk.slice(0, cut), index, total, depth + 1)),
+        ...(await summarizeChunkSafe(chunk.slice(cut), index, total, depth + 1)),
+      ];
+    }
+    throw e;
+  }
+}
+
+function mindmapSystemPrompt(template) {
+  return `Eres un experto que convierte transcripciones en mapas de ideas de estudio en español. Template: ${template}. `
+    + 'Responde SOLO JSON con esta forma exacta: '
+    + '{'
+    + '"summary": string, '
+    + '"mindmap": {'
+    + '"title": string, '
+    + '"layout": "topics"|"comparison"|"steps"|"timeline"|"glossary"|"cause"|"solution", '
+    + '"topics": [{"title": string, "branches": [{"label": string, "detail": string, "points": [string], "branches": [{"label": string, "detail": string, "points": [string]}]}]}], '
+    + '"dimensions": [string], '
+    + '"items": [{"name": string, "values": [string]}], '
+    + '"steps": [{"label": string, "detail": string, "points": [string]}], '
+    + '"events": [{"date": string, "label": string, "detail": string, "points": [string]}], '
+    + '"terms": [{"term": string, "definition": string, "points": [string]}], '
+    + '"causes": [{"label": string, "detail": string, "effects": [string]}], '
+    + '"problems": [{"label": string, "detail": string, "solutions": [string]}]'
+    + '}'
+    + '}. '
+    + 'Elegí el layout que MEJOR se adapte al contenido escuchado y completá SOLO sus campos (podés omitir los demás): '
+    + '"topics" = mapa conceptual de uno o varios temas con sus ideas (USO GENERAL, el más común); '
+    + '"comparison" = se comparan varios elementos (teorías, modelos, autores, enfoques) a lo largo de dimensiones comunes; '
+    + '"steps" = proceso, método, algoritmo o secuencia de pasos a seguir; '
+    + '"timeline" = evolución o sucesión histórica de hechos con fechas o etapas; '
+    + '"glossary" = la clase consiste esencialmente en DEFINIR términos o conceptos (una lista de definiciones, sin comparación, proceso ni causas); '
+    + '"cause" = se explican causas y sus efectos o consecuencias; '
+    + '"solution" = se plantean problemas y sus soluciones, o un caso con diagnóstico y tratamiento. '
+    + 'IMPORTANTE: los diseños especiales (comparison, steps, timeline, glossary, cause, solution) usalos SOLO si el contenido realmente se ajusta a esa forma; si no, usá "topics". No fuerces un diseño. '
+    + 'NO hay límite de temas, ramas, sub-ramas, puntos, elementos, pasos, eventos, términos, causas ni problemas: usá tantos como necesite la clase para cubrir TODAS las ideas principales. '
+    + 'Si el tema lo pide, anidá sub-ramas dentro de una rama usando su campo "branches". '
+    + 'Una clase puede tratar uno o varios temas centrales; si son varios, devolvé varios objetos en topics. '
+    + 'Reglas de contenido: label/term/label de paso/evento/etiqueta corto (2 a 5 palabras); detail o definition una o dos frases con el contenido real de la transcripción; points/effects/solutions viñetas concretas (datos, sub-ideas, fórmulas, ejemplos); para comparison, cada item con sus values en el mismo orden que dimensions; para timeline usá "date" con el año, década o momento mencionado. '
+    + 'Organizá por relación de ideas; solo usá orden cronológico cuando elijas "timeline" o "steps". No menciones minutos de la grabación. '
+    + 'No repitas ideas y no inventes contenido ausente. '
+    + 'El summary debe ser un resumen de estudio de 3 a 6 frases.';
+}
+
+async function runSummaryJob(id, template) {
+  try {
+    const r = getRecording(id);
+    if (!r) return;
+    const chunks = transcriptChunks(r.transcript);
+    if (chunks.length === 0) throw new Error('La grabación no tiene transcripción');
+
+    const parts = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const results = await summarizeChunkSafe(chunks[i], i, chunks.length);
+      for (const part of results) {
+        parts.push(
+          `Fragmento ${i + 1}:\nResumen: ${part.summary}\nPuntos:\n${part.points.map((p) => `- ${p}`).join('\n')}`,
+        );
+      }
+    }
+    let material = parts.join('\n\n');
+    // Último resguardo para clases muy largas: el pedido final debe entrar en TPM.
+    if (material.length > 7000) material = material.slice(0, 7000);
+
     const messages = [
-      {
-        role: 'system',
-        content: `Eres un experto que convierte transcripciones en mapas de ideas de estudio en español. Template: ${template}. `
-          + 'Responde SOLO JSON con esta forma exacta: '
-          + '{'
-          + '"summary": string, '
-          + '"mindmap": {'
-          + '"title": string, '
-          + '"layout": "topics"|"comparison"|"steps"|"timeline"|"glossary"|"cause"|"solution", '
-          + '"topics": [{"title": string, "branches": [{"label": string, "detail": string, "points": [string], "branches": [{"label": string, "detail": string, "points": [string]}]}]}], '
-          + '"dimensions": [string], '
-          + '"items": [{"name": string, "values": [string]}], '
-          + '"steps": [{"label": string, "detail": string, "points": [string]}], '
-          + '"events": [{"date": string, "label": string, "detail": string, "points": [string]}], '
-          + '"terms": [{"term": string, "definition": string, "points": [string]}], '
-          + '"causes": [{"label": string, "detail": string, "effects": [string]}], '
-          + '"problems": [{"label": string, "detail": string, "solutions": [string]}]'
-          + '}'
-          + '}. '
-          + 'Elegí el layout que MEJOR se adapte al contenido escuchado y completá SOLO sus campos (podés omitir los demás): '
-          + '"topics" = mapa conceptual de uno o varios temas con sus ideas (USO GENERAL, el más común); '
-          + '"comparison" = se comparan varios elementos (teorías, modelos, autores, enfoques) a lo largo de dimensiones comunes; '
-          + '"steps" = proceso, método, algoritmo o secuencia de pasos a seguir; '
-          + '"timeline" = evolución o sucesión histórica de hechos con fechas o etapas; '
-          + '"glossary" = la clase consiste esencialmente en DEFINIR términos o conceptos (una lista de definiciones, sin comparación, proceso ni causas); '
-          + '"cause" = se explican causas y sus efectos o consecuencias; '
-          + '"solution" = se plantean problemas y sus soluciones, o un caso con diagnóstico y tratamiento. '
-          + 'IMPORTANTE: los diseños especiales (comparison, steps, timeline, glossary, cause, solution) usalos SOLO si el contenido realmente se ajusta a esa forma; si no, usá "topics". No fuerces un diseño. '
-          + 'NO hay límite de temas, ramas, sub-ramas, puntos, elementos, pasos, eventos, términos, causas ni problemas: usá tantos como necesite la clase para cubrir TODAS las ideas principales. '
-          + 'Si el tema lo pide, anidá sub-ramas dentro de una rama usando su campo "branches". '
-          + 'Una clase puede tratar uno o varios temas centrales; si son varios, devolvé varios objetos en topics. '
-          + 'Reglas de contenido: label/term/label de paso/evento/etiqueta corto (2 a 5 palabras); detail o definition una o dos frases con el contenido real de la transcripción; points/effects/solutions viñetas concretas (datos, sub-ideas, fórmulas, ejemplos); para comparison, cada item con sus values en el mismo orden que dimensions; para timeline usá "date" con el año, década o momento mencionado. '
-          + 'Organizá por relación de ideas; solo usá orden cronológico cuando elijas "timeline" o "steps". No menciones minutos de la grabación. '
-          + 'No repitas ideas y no inventes contenido ausente. '
-          + 'El summary debe ser un resumen de estudio de 3 a 6 frases.',
-      },
-      { role: 'user', content: transcriptText },
+      { role: 'system', content: mindmapSystemPrompt(template) },
+      { role: 'user', content: material },
     ];
 
     let raw;
     try {
-      raw = await openaiChat(messages, { json: true });
+      raw = await openaiChat(messages, { json: true, maxTokens: 4000 });
     } catch (e) {
-      console.warn('[summarize] JSON mode falló, reintento sin response_format:', e.message.slice(0, 160));
-      raw = await openaiChat(messages, { json: false });
+      if (/413|429|demasiado grande/i.test(e.message)) throw e;
+      console.warn('[summarize] JSON final falló, reintento simple:', e.message.slice(0, 140));
+      raw = await openaiChat(messages, { json: false, maxTokens: 4000 });
     }
 
     const parsed = parseJsonLoose(raw);
-    return saveSummary(r.id, parsed.summary, normalizeMindmap(parsed.mindmap));
+    const mindmap = normalizeMindmap(parsed.mindmap);
+    if (!mindmap) throw new Error('La IA no devolvió un mapa de ideas válido');
+    saveSummary(id, parsed.summary, mindmap);
+    console.log(`[summarize] ${id} listo (${chunks.length} bloque/s)`);
   } catch (e) {
-    console.error('[summarize] error:', e.message);
-    return reply.code(500).send({ error: e.message });
+    console.error(`[summarize] ${id} error:`, e.message);
+    setStatus(id, 'error', `No se pudo resumir: ${e.message}`);
+  } finally {
+    summaryJobs.delete(id);
   }
+}
+
+app.post('/recordings/:id/summarize', async (req, reply) => {
+  const r = getRecording(req.params.id);
+  if (!r) return reply.code(404).send({ error: 'not found' });
+  if (!OPENAI_KEY) return reply.code(500).send({ error: 'OPENAI_API_KEY no configurada' });
+  if (!r.transcript.length) return reply.code(400).send({ error: 'La grabación no tiene transcripción' });
+
+  const template = req.body?.template || 'general';
+  if (!summaryJobs.has(r.id)) {
+    summaryJobs.add(r.id);
+    setStatus(r.id, 'summarizing', null);
+    // No se espera: una clase larga puede tardar varios minutos y Cloudflare
+    // corta respuestas de más de ~100 s. El cliente consulta el estado.
+    runSummaryJob(r.id, template);
+  }
+  return reply.code(202).send({ id: r.id, status: 'summarizing' });
 });
+
+function normalizeText(s) {
+  return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function countOccurrences(haystack, needle) {
+  let count = 0;
+  let i = 0;
+  while ((i = haystack.indexOf(needle, i)) !== -1) {
+    count++;
+    i += needle.length;
+  }
+  return count;
+}
+
+/**
+ * Para preguntas, no mandamos toda la clase: elegimos los fragmentos con más
+ * palabras en común con la pregunta. Así entra en el límite de tokens.
+ */
+function relevantTranscript(segments, question, maxChars = 12_000) {
+  const chunks = transcriptChunks(
+    segments,
+    9000,
+    (s) => `[${s.start}-${s.end}] ${s.speaker}: ${s.text}`,
+  );
+  if (chunks.length <= 1) return chunks[0] || '';
+
+  const terms = [...new Set(
+    normalizeText(question).split(/[^a-z0-9]+/).filter((t) => t.length > 3),
+  )].slice(0, 12);
+
+  const scored = chunks.map((text, index) => ({
+    text,
+    index,
+    score: terms.reduce((n, t) => n + countOccurrences(normalizeText(text), t), 0),
+  }));
+  scored.sort((a, b) => b.score - a.score || a.index - b.index);
+
+  const picked = [];
+  let total = 0;
+  for (const c of scored) {
+    if (total + c.text.length > maxChars && picked.length > 0) continue;
+    picked.push(c);
+    total += c.text.length;
+    if (total >= maxChars) break;
+  }
+
+  if (picked.every((c) => c.score === 0)) {
+    return [chunks[0], chunks[chunks.length - 1]].join('\n\n');
+  }
+  return picked.sort((a, b) => a.index - b.index).map((c) => c.text).join('\n\n');
+}
 
 app.post('/recordings/:id/ask', async (req, reply) => {
   const r = getRecording(req.params.id);
@@ -556,15 +754,19 @@ app.post('/recordings/:id/ask', async (req, reply) => {
 
   const question = req.body?.question || '';
   if (!question.trim()) return reply.code(400).send({ error: 'Pregunta vacía' });
+  if (summaryJobs.has(r.id)) {
+    return reply.code(409).send({ error: 'La nota se está resumiendo. Esperá unos minutos y volvé a preguntar.' });
+  }
 
-  const transcriptText = r.transcript.map((s) => `[${s.start}-${s.end}] ${s.speaker}: ${s.text}`).join('\n');
+  const transcriptText = relevantTranscript(r.transcript, question);
   if (!transcriptText) return reply.code(400).send({ error: 'La grabación no tiene transcripción' });
+  const summaryContext = r.summary ? `Resumen de la clase:\n${r.summary}\n\n` : '';
 
   try {
     const answer = await openaiChat([
       { role: 'system', content: 'Respondé preguntas sobre la transcripción. Sé preciso y breve. Si la respuesta no está en la transcripción, decilo.' },
-      { role: 'user', content: `Transcripción:\n${transcriptText}\n\nPregunta: ${question}` },
-    ]);
+      { role: 'user', content: `${summaryContext}Transcripción (fragmentos relevantes):\n${transcriptText}\n\nPregunta: ${question}` },
+    ], { maxTokens: 1200 });
     return {
       answer,
       citations: r.transcript.map((s) => ({ start: s.start, end: s.end })),
@@ -575,6 +777,7 @@ app.post('/recordings/:id/ask', async (req, reply) => {
 });
 
 const port = Number(process.env.PORT || 3001);
+resetInterrupted();
 await cleanupOrphanAudio(app.log);
 setInterval(() => {
   cleanupOrphanAudio(app.log).catch((e) => app.log.warn({ err: e }, 'cleanup de audios falló'));

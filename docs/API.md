@@ -4,7 +4,7 @@ Base pública: `https://api.lecmap.app` (local: `http://localhost:3001`, Android
 
 ## Modelos
 
-Recording: `{ id, title, status: queued|transcribing|ready|error, audioPath?, youtubeUrl?, transcript?: Segment[], summary?, mindmap?, error?, createdAt }`
+Recording: `{ id, title, status: queued|transcribing|summarizing|ready|error, audioPath?, youtubeUrl?, transcript?: Segment[], summary?, mindmap?, error?, createdAt }`
 Segment: `{ start, end, speaker, text }`
 Mindmap: `{ title, layout, topics?, dimensions?, items?, steps?, events?, terms?, causes?, problems? }`
 
@@ -29,8 +29,8 @@ Solo `timeline` y `steps` son cronológicos. El backend normaliza los formatos v
 - `DELETE /recordings/:id` borra registro, segmentos y archivo de audio
 - `GET /files/:name` sirve el audio subido (para el reproductor web/Android; las notas analizadas ya no tienen audio en el servidor)
 - `POST /recordings/:id/transcribe` lanza STT (Groq `whisper-large-v3`). Si termina bien, guarda la transcripción, **borra el archivo de audio del servidor** y deja `audioPath: null`.
-- `POST /recordings/:id/summarize` `{ template?: general|meeting|class }` -> Recording con `{ summary, mindmap }`
-- `POST /recordings/:id/ask` `{ question }` -> `{ answer, citations: [{start,end}] }` (lo usa **ApIA**)
+- `POST /recordings/:id/summarize` `{ template?: general|meeting|class }` -> **202** `{ id, status: "summarizing" }`. El resumen corre en segundo plano por bloques (para respetar el límite de 8.000 tokens/minuto de Groq en clases largas). El cliente debe consultar `GET /recordings/:id` cada pocos segundos hasta que aparezca `summary` o `status: "error"`.
+- `POST /recordings/:id/ask` `{ question }` -> `{ answer, citations: [{start,end}] }` (lo usa **ApIA**). Selecciona los fragmentos más relevantes de la transcripción y agrega el resumen, así funciona también en clases largas.
 - `GET /health` -> `{ ok: true, openai: boolean, stt, chat }`
 
 ## Persistencia

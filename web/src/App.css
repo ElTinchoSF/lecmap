@@ -145,6 +145,7 @@ body {
 .rec-status { font-size: 0.8rem; color: var(--text2); }
 .rec-status.ready { color: var(--green); }
 .rec-status.error { color: var(--red); }
+.rec-status.summarizing { color: var(--accent); }
 
 .detail {
   background: var(--surface);
@@ -180,6 +181,7 @@ body {
 .status-badge.ready { background: rgba(52, 211, 153, 0.2); color: var(--green); }
 .status-badge.error { background: rgba(248, 113, 113, 0.2); color: var(--red); }
 .status-badge.queued, .status-badge.transcribing { background: rgba(56, 189, 248, 0.2); color: var(--accent); }
+.status-badge.summarizing { background: rgba(56, 189, 248, 0.2); color: var(--accent); }
 
 .player {
   background: var(--surface2);

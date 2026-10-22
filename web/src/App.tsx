@@ -562,6 +562,22 @@ function serverAudioUrl(audioPath?: string | null): string | null {
   return `${API}/files/${audioPath.split(/[\\/]/).pop()}`;
 }
 
+/** El backend resume en segundo plano (202). Esperamos a que termine. */
+async function waitForSummary(serverId: string, timeoutMs = 12 * 60 * 1000): Promise<Recording> {
+  const start = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const res = await fetch(`${API}/recordings/${serverId}`);
+    if (!res.ok) throw new Error(`No se pudo consultar el resumen (HTTP ${res.status})`);
+    const detail: Recording = await res.json();
+    if (detail.summary) return detail;
+    if (detail.status === 'error') throw new Error(detail.error || 'No se pudo resumir');
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('El resumen está tardando demasiado. Probá de nuevo en unos minutos.');
+    }
+  }
+}
+
 function localMatches(local: LocalNote, q: string): boolean {
   const needle = q.trim().toLowerCase();
   if (!needle) return true;
@@ -890,7 +906,13 @@ export default function App() {
           body: JSON.stringify({ template: 'class' }),
         });
         if (!r.ok) throw new Error(await r.text() || `Error al resumir (HTTP ${r.status})`);
-        detail = await r.json();
+        const started: Recording = await r.json();
+        if (started.status === 'summarizing') {
+          setSel((prev) => (prev ? { ...prev, status: 'summarizing' } : prev));
+          detail = await waitForSummary(serverId);
+        } else {
+          detail = started;
+        }
       }
 
       if (!detail) {
@@ -952,7 +974,11 @@ export default function App() {
         body: JSON.stringify({ template: 'class' }),
       });
       if (!r.ok) throw new Error(await r.text() || `HTTP ${r.status}`);
-      const detail: Recording = await r.json();
+      const started: Recording = await r.json();
+      if (started.status === 'summarizing') setSel({ ...sel, status: 'summarizing' });
+      const detail = started.status === 'summarizing'
+        ? await waitForSummary(sel.serverId)
+        : started;
       await syncLocal(sel.serverId, detail);
       setSel({ ...sel, ...detail, hasServerAudio: !!detail.audioPath });
       await load();
@@ -1123,7 +1149,11 @@ export default function App() {
                   {note.serverId ? note.status : 'local'}
                   {note.hasLocalAudio ? ' · audio local' : ''}
                 </div>
-                {noteNeedsAnalysis(note) && (note.serverId || note.hasLocalAudio) && (
+                {note.status === 'summarizing' ? (
+                  <div style={{ marginTop: 8, color: 'var(--accent)', fontSize: 12 }}>
+                    Resumiendo… puede tardar unos minutos
+                  </div>
+                ) : noteNeedsAnalysis(note) && (note.serverId || note.hasLocalAudio) ? (
                   <button
                     className="btn btn-secondary"
                     style={{ marginTop: 8, padding: '4px 10px', fontSize: 12 }}
@@ -1132,7 +1162,7 @@ export default function App() {
                   >
                     {note.serverId ? 'Analizar' : 'Analizar (subir audio)'}
                   </button>
-                )}
+                ) : null}
               </div>
             );
           })}
@@ -1147,11 +1177,17 @@ export default function App() {
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span className={`status-badge ${sel.status}`}>{sel.serverId ? sel.status : 'local'}</span>
                   <button className="btn btn-secondary" onClick={close} title="Cerrar detalle">Cerrar ✕</button>
-                  <button className="btn btn-danger" onClick={remove} disabled={busy}>Eliminar nota</button>
+                  <button className="btn btn-danger" onClick={remove} disabled={busy || sel.status === 'summarizing'}>Eliminar nota</button>
                 </div>
               </div>
 
               {sel.error && <div className="error-msg">{sel.error}</div>}
+
+              {sel.status === 'summarizing' && (
+                <div className="summary-box" style={{ color: 'var(--accent)', marginBottom: 12 }}>
+                  Resumiendo la clase en segundo plano… puede tardar unos minutos. Podés seguir usando la app.
+                </div>
+              )}
 
               <div className="player">
                 {audioUrl
@@ -1166,7 +1202,7 @@ export default function App() {
 
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
                 {sel.serverId || sel.hasLocalAudio ? (
-                  <button className="btn btn-primary" onClick={() => analyze(sel)} disabled={busy}>
+                  <button className="btn btn-primary" onClick={() => analyze(sel)} disabled={busy || sel.status === 'summarizing'}>
                     {sel.serverId ? 'Analizar de nuevo' : 'Analizar (subir audio)'}
                   </button>
                 ) : (
@@ -1175,10 +1211,10 @@ export default function App() {
                   </span>
                 )}
                 {sel.transcript.length > 0 && (
-                  <button className="btn btn-secondary" onClick={summarize} disabled={busy}>Resumir</button>
+                  <button className="btn btn-secondary" onClick={summarize} disabled={busy || sel.status === 'summarizing'}>Resumir</button>
                 )}
                 {sel.hasLocalAudio && (
-                  <button className="btn btn-secondary" onClick={releaseAudio} disabled={busy}>Liberar audio</button>
+                  <button className="btn btn-secondary" onClick={releaseAudio} disabled={busy || sel.status === 'summarizing'}>Liberar audio</button>
                 )}
               </div>
 

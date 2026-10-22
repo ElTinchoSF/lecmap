@@ -62,7 +62,8 @@ const q = {
   deleteRecording: db.prepare(`DELETE FROM recordings WHERE id = ?`),
   setStatus: db.prepare(`UPDATE recordings SET status = ?, error = ? WHERE id = ?`),
   setTranscriptMeta: db.prepare(`UPDATE recordings SET status = 'ready', error = NULL WHERE id = ?`),
-  setSummary: db.prepare(`UPDATE recordings SET summary = ?, mindmap = ? WHERE id = ?`),
+  setSummary: db.prepare(`UPDATE recordings SET summary = ?, mindmap = ?, status = 'ready', error = NULL WHERE id = ?`),
+  resetInterrupted: db.prepare(`UPDATE recordings SET status = 'error', error = 'El análisis se interrumpió (el servidor se reinició). Volvé a intentarlo.' WHERE status IN ('transcribing', 'summarizing')`),
   setAudioPath: db.prepare(`UPDATE recordings SET audio_path = ? WHERE id = ?`),
   listAudioPaths: db.prepare(`SELECT audio_path FROM recordings WHERE audio_path IS NOT NULL`),
   insertSegment: db.prepare(`INSERT INTO segments (recording_id, idx, start, end, speaker, text) VALUES (?, ?, ?, ?, ?, ?)`),
@@ -109,6 +110,11 @@ export function saveTranscript(id, segments) {
 export function saveSummary(id, summary, mindmap) {
   q.setSummary.run(summary, JSON.stringify(mindmap ?? null), id);
   return getRecording(id);
+}
+
+/** Al arrancar, las notas que quedaron a mitad de análisis pasan a error. */
+export function resetInterrupted() {
+  q.resetInterrupted.run();
 }
 
 export function setAudioPath(id, audioPath) {

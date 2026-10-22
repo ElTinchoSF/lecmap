@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -143,7 +144,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       busy = true
       error = null
       try {
-        val detail = withContext(Dispatchers.IO) { api.summarize(serverId, SummarizeReq()) }
+        val started = withContext(Dispatchers.IO) { api.summarize(serverId, SummarizeReq()) }
+        if (started.status == "summarizing") selected = selected?.copy(status = "summarizing")
+        val detail = if (started.status == "summarizing" || started.summary.isNullOrBlank()) {
+          awaitSummary(serverId)
+        } else {
+          started
+        }
         store.updateFromServer(serverId, detail)
         selected = store.findByServerId(serverId)?.let { detail.withLocal(it) } ?: detail
         refresh()
@@ -203,7 +210,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         if (current.summary.isNullOrBlank()) {
-          current = withContext(Dispatchers.IO) { api.summarize(serverId, SummarizeReq()) }
+          val started = withContext(Dispatchers.IO) { api.summarize(serverId, SummarizeReq()) }
+          if (started.status == "summarizing") selected = current.copy(status = "summarizing")
+          current = if (started.status == "summarizing" || started.summary.isNullOrBlank()) {
+            awaitSummary(serverId)
+          } else {
+            started
+          }
           store.updateFromServer(serverId, current)
         }
 
@@ -329,6 +342,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       ?.takeIf { it.isNotBlank() }
       ?: return null
     return Net.normalize(serverUrl) + "files/" + name
+  }
+
+  private suspend fun awaitSummary(serverId: String): RecordingDto = withContext(Dispatchers.IO) {
+    val deadline = System.currentTimeMillis() + 12 * 60_000
+    while (System.currentTimeMillis() < deadline) {
+      delay(2500)
+      val d = api.get(serverId)
+      if (!d.summary.isNullOrBlank()) return@withContext d
+      if (d.status == "error") throw IllegalStateException(d.error ?: "No se pudo resumir")
+    }
+    throw IllegalStateException("El resumen está tardando demasiado. Probá de nuevo en unos minutos.")
   }
 
   private fun merge(locals: List<LocalNote>, server: List<RecordingDto>): List<RecordingDto> {

@@ -27,7 +27,7 @@ Grabá una clase, transcribila, resumila y convertí el contenido en un mapa de 
 
 1. Crear grabación (audio o URL YouTube) -> `POST /recordings`
 2. Transcribir (Whisper + diarización básica) -> `POST /recordings/:id/transcribe`
-3. Resumir + mapa de ideas adaptativo -> `POST /recordings/:id/summarize`. La IA elige el diseño según el contenido: mapa de temas (`topics`), tabla comparativa (`comparison`), pasos (`steps`), línea de tiempo (`timeline`), glosario (`glossary`), causa–efecto (`cause`) o problema–solución (`solution`). Sin límite de ramas.
+3. Resumir + mapa de ideas adaptativo -> `POST /recordings/:id/summarize`. La IA elige el diseño según el contenido: mapa de temas (`topics`), tabla comparativa (`comparison`), pasos (`steps`), línea de tiempo (`timeline`), glosario (`glossary`), causa-efecto (`cause`) o problema-solución (`solution`). Sin límite de ramas. En clases largas el resumen corre en segundo plano y por bloques para respetar el límite gratuito de Groq (8.000 tokens/minuto); la nota queda en `summarizing` hasta que termina (puede tardar unos minutos).
 4. Preguntar a ApIA -> `POST /recordings/:id/ask`
 5. Buscar por keyword -> `GET /recordings?q=`
 6. Compartir por link firmado (v1 simple)

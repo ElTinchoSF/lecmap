@@ -367,7 +367,7 @@ private fun RecordingCard(
   onClick: () -> Unit,
   onAnalyze: () -> Unit,
 ) {
-  val needsAnalysis = rec.status != "ready" || rec.summary.isNullOrBlank()
+  val needsAnalysis = rec.status != "summarizing" && (rec.status != "ready" || rec.summary.isNullOrBlank())
   Surface(
     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick),
     color = Surface1,
@@ -393,6 +393,14 @@ private fun RecordingCard(
           Spacer(Modifier.width(8.dp))
           Text(err, color = Danger, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+      }
+      if (rec.status == "summarizing") {
+        Text(
+          "Resumiendo… puede tardar unos minutos",
+          color = Accent,
+          fontSize = 11.sp,
+          modifier = Modifier.padding(top = 4.dp),
+        )
       }
       if (needsAnalysis) {
         TextButton(
@@ -684,6 +692,7 @@ private fun ErrorBanner(message: String, onClose: () -> Unit) {
 private fun statusColor(status: String?): Color = when (status) {
   "ready" -> GreenOk
   "error" -> Danger
+  "summarizing", "transcribing", "queued" -> Accent
   else -> TextSecondary
 }
 
