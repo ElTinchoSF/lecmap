@@ -141,6 +141,12 @@ body {
   word-break: break-all;
 }
 
+.settings-panel code {
+  background: rgba(148, 163, 184, 0.15);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
 .settings-help {
   color: var(--text2);
   font-size: 0.78rem;
