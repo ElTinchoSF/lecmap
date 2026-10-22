@@ -149,7 +149,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       error = null
       try {
         val started = withContext(Dispatchers.IO) { api.summarize(serverId, SummarizeReq()) }
-        if (started.status == "summarizing") selected = selected?.copy(status = "summarizing")
+        if (started.status == "summarizing") {
+          selected = selected?.copy(status = "summarizing")
+          list = list.map { if (it.serverId == serverId) it.copy(status = "summarizing", error = null) else it }
+        }
         val detail = if (started.status == "summarizing" || started.summary.isNullOrBlank()) {
           awaitSummary(serverId)
         } else {
@@ -215,7 +218,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         if (current.summary.isNullOrBlank()) {
           val started = withContext(Dispatchers.IO) { api.summarize(serverId, SummarizeReq()) }
-          if (started.status == "summarizing") selected = current.copy(status = "summarizing")
+          if (started.status == "summarizing") {
+            selected = current.copy(status = "summarizing")
+            list = list.map { if (it.serverId == serverId) it.copy(status = "summarizing", error = null) else it }
+          }
           current = if (started.status == "summarizing" || started.summary.isNullOrBlank()) {
             awaitSummary(serverId)
           } else {

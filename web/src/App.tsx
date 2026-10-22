@@ -933,6 +933,7 @@ export default function App() {
         if (!r.ok) throw new Error(await r.text() || `Error al resumir (HTTP ${r.status})`);
         const started: Recording = await r.json();
         if (started.status === 'summarizing') {
+          setServerNotes((prev) => prev.map((s) => (s.id === serverId ? { ...s, status: 'summarizing', error: undefined } : s)));
           setSel((prev) => (prev ? { ...prev, status: 'summarizing' } : prev));
           detail = await waitForSummary(serverId);
         } else {
@@ -1000,7 +1001,10 @@ export default function App() {
       });
       if (!r.ok) throw new Error(await r.text() || `HTTP ${r.status}`);
       const started: Recording = await r.json();
-      if (started.status === 'summarizing') setSel({ ...sel, status: 'summarizing' });
+      if (started.status === 'summarizing') {
+        setServerNotes((prev) => prev.map((s) => (s.id === sel.serverId ? { ...s, status: 'summarizing', error: undefined } : s)));
+        setSel({ ...sel, status: 'summarizing' });
+      }
       const detail = started.status === 'summarizing'
         ? await waitForSummary(sel.serverId)
         : started;
