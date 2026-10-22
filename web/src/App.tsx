@@ -600,7 +600,7 @@ function mergeNotes(server: Recording[], locals: LocalNote[], q: string, serverO
         serverId: s.id,
         title: s.title || local.title,
         status: s.status || local.status,
-        error: s.error || local.error,
+        error: s.summary ? undefined : (s.error || local.error),
         transcript: s.transcript?.length ? s.transcript : local.transcript,
         summary: s.summary ?? local.summary,
         mindmap: s.mindmap ?? local.mindmap,
@@ -698,8 +698,33 @@ export default function App() {
       const r = await fetch(`${API}/recordings?q=${encodeURIComponent(q)}`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
-      setServerNotes(Array.isArray(data) ? data : []);
+      const serverList: Recording[] = Array.isArray(data) ? data : [];
+      setServerNotes(serverList);
       setServerOk(true);
+
+      // Persistir en IndexedDB el resumen y la transcripción que ya están en el
+      // servidor, para que sigan disponibles sin conexión.
+      const byId = new Map(serverList.map((s) => [s.id, s]));
+      let changed = false;
+      const synced = localList.map((local) => {
+        const s = local.serverId ? byId.get(local.serverId) : undefined;
+        if (!s) return local;
+        const next: LocalNote = {
+          ...local,
+          title: s.title || local.title,
+          status: s.status || local.status,
+          error: s.summary ? undefined : (s.error ?? local.error),
+          transcript: s.transcript?.length ? s.transcript : local.transcript,
+          summary: s.summary ?? local.summary,
+          mindmap: s.mindmap ?? local.mindmap,
+        };
+        if (JSON.stringify(next) !== JSON.stringify(local)) changed = true;
+        return next;
+      });
+      if (changed) {
+        await Promise.all(synced.map((l, i) => (l !== localList[i] ? saveLocalNote(l) : Promise.resolve())));
+        setLocals(synced);
+      }
     } catch {
       setServerNotes([]);
       setServerOk(false);
