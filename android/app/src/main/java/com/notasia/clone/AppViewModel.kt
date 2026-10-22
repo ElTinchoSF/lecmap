@@ -83,7 +83,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       } catch (e: Exception) {
         val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, emptyList())
-        if (locals.isEmpty()) error = friendly(e)
+        if (locals.isEmpty() || (e is HttpException && e.code() == 401)) error = friendly(e)
       }
     }
   }
@@ -297,7 +297,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val serverId = rec.serverId
         if (serverId != null) {
           try {
-            withContext(Dispatchers.IO) { api.delete(serverId) }
+            val res = withContext(Dispatchers.IO) { api.delete(serverId) }
+            if (!res.isSuccessful && res.code() != 404) throw HttpException(res)
           } catch (e: HttpException) {
             if (e.code() != 404) throw e
           }
