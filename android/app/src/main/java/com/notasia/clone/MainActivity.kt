@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -243,6 +244,7 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
 
   if (showServer) {
     var draft by remember { mutableStateOf(vm.serverUrl) }
+    var tokenDraft by remember { mutableStateOf(vm.apiToken) }
     AlertDialog(
       onDismissRequest = { showServer = false },
       containerColor = Surface1,
@@ -250,7 +252,7 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
       text = {
         Column {
           Text(
-            "URL del backend. Emulador: http://10.0.2.2:3001/  ·  Teléfono: http://IP_DE_LA_PC:3001/",
+            "URL del backend. Emulador: http://10.0.2.2:3001/  ·  Teléfono: http://IP_DE_LA_PC:3001/  ·  Producción: https://api.lecmap.app/",
             color = TextSecondary,
             fontSize = 12.sp,
             lineHeight = 17.sp,
@@ -261,13 +263,33 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
             onValueChange = { draft = it },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+            label = { Text("URL") },
             colors = fieldColors(),
+          )
+          Spacer(Modifier.height(10.dp))
+          OutlinedTextField(
+            value = tokenDraft,
+            onValueChange = { tokenDraft = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Token de API") },
+            placeholder = { Text("Vacío si el backend no usa API_TOKEN") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            colors = fieldColors(),
+          )
+          Spacer(Modifier.height(8.dp))
+          Text(
+            "El token protege las notas y el uso de Groq. Se guarda en este dispositivo.",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            lineHeight = 16.sp,
           )
         }
       },
       confirmButton = {
         TextButton(onClick = {
-          vm.updateServerUrl(draft)
+          vm.updateServerUrl(draft, tokenDraft)
           showServer = false
         }) { Text("Guardar") }
       },

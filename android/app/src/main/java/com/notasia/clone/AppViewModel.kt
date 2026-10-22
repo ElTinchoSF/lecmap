@@ -42,12 +42,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   )
     private set
 
+  var apiToken by mutableStateOf(prefs.getString("api_token", "") ?: "")
+    private set
+
+  init {
+    Net.apiToken = apiToken
+  }
+
   private val api get() = Net.api(serverUrl)
 
-  fun updateServerUrl(url: String) {
+  fun updateServerUrl(url: String, token: String = apiToken) {
     val normalized = Net.normalize(url)
     serverUrl = normalized
-    prefs.edit().putString("server_url", normalized).apply()
+    apiToken = token.trim()
+    Net.apiToken = apiToken
+    prefs.edit()
+      .putString("server_url", normalized)
+      .putString("api_token", apiToken)
+      .apply()
     error = null
     selected = null
     refresh()
@@ -422,5 +434,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   private fun friendly(e: Exception): String =
-    e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
+    if (e is HttpException && e.code() == 401)
+      "Token de API inválido o ausente. Configuralo en Cambiar servidor."
+    else e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 }

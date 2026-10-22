@@ -4,6 +4,7 @@ import multipart from '@fastify/multipart';
 import { readFile, writeFile, unlink, readdir, stat } from 'fs/promises';
 import { createReadStream } from 'fs';
 import { mkdirSync } from 'fs';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import path from 'path';
 import 'dotenv/config';
 import {
@@ -36,8 +37,37 @@ await app.register(cors, {
     if (!origin || allowedOrigins.has(origin)) return cb(null, true);
     cb(null, false);
   },
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Token'],
 });
 await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } });
+
+// Token opcional para proteger la API cuando está expuesta por el túnel.
+// Si API_TOKEN está vacío, la API queda abierta (comportamiento anterior).
+const API_TOKEN = (process.env.API_TOKEN || '').trim();
+const API_TOKEN_HASH = API_TOKEN ? createHash('sha256').update(API_TOKEN).digest() : null;
+
+function tokenMatches(candidate) {
+  if (!API_TOKEN_HASH || !candidate) return false;
+  const hash = createHash('sha256').update(String(candidate)).digest();
+  return timingSafeEqual(hash, API_TOKEN_HASH);
+}
+
+app.addHook('onRequest', async (req, reply) => {
+  if (!API_TOKEN_HASH || req.method === 'OPTIONS') return;
+  const pathname = (req.url || '').split('?')[0];
+  // /health y /files quedan públicos: el reproductor web/Android pide el
+  // audio con una URL directa y no puede mandar cabeceras personalizadas.
+  if (pathname === '/health' || pathname.startsWith('/files/')) return;
+
+  const auth = req.headers.authorization || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const alt = req.headers['x-api-token'];
+  if (tokenMatches(bearer) || tokenMatches(typeof alt === 'string' ? alt : '')) return;
+
+  reply.header('WWW-Authenticate', 'Bearer');
+  return reply.code(401).send({ error: 'Token de API inválido o ausente' });
+});
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_BASE = process.env.OPENAI_BASE_URL || 'https://api.groq.com/openai/v1';
@@ -407,7 +437,13 @@ function normalizeMindmap(mm) {
   return null;
 }
 
-app.get('/health', async () => ({ ok: true, openai: !!OPENAI_KEY, stt: STT_MODEL, chat: CHAT_MODEL }));
+app.get('/health', async () => ({
+  ok: true,
+  openai: !!OPENAI_KEY,
+  stt: STT_MODEL,
+  chat: CHAT_MODEL,
+  auth: !!API_TOKEN_HASH,
+}));
 
 app.post('/recordings', async (req) => {
   const ct = req.headers['content-type'] || '';

@@ -13,6 +13,19 @@ import type { LocalNote } from './local';
 import './App.css';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const TOKEN_KEY = 'lecmap_api_token';
+const ENV_TOKEN = (import.meta.env.VITE_API_TOKEN as string | undefined) || '';
+
+/** Agrega el token de API a cualquier fetch. El token vive en este navegador. */
+function withAuth(token: string, headers?: HeadersInit): Headers {
+  const h = new Headers(headers);
+  if (token) h.set('Authorization', `Bearer ${token}`);
+  return h;
+}
+
+function apiFetch(path: string, init: RequestInit = {}, token = ''): Promise<Response> {
+  return fetch(`${API}${path}`, { ...init, headers: withAuth(token, init.headers) });
+}
 
 type Segment = { start: number; end: number; speaker: string; text: string };
 type MindBranch = { label: string; detail?: string; points: string[]; branches: MindBranch[] };
@@ -563,11 +576,11 @@ function serverAudioUrl(audioPath?: string | null): string | null {
 }
 
 /** El backend resume en segundo plano (202). Esperamos a que termine. */
-async function waitForSummary(serverId: string, timeoutMs = 12 * 60 * 1000): Promise<Recording> {
+async function waitForSummary(serverId: string, token: string, timeoutMs = 12 * 60 * 1000): Promise<Recording> {
   const start = Date.now();
   for (;;) {
     await new Promise((r) => setTimeout(r, 2500));
-    const res = await fetch(`${API}/recordings/${serverId}`);
+    const res = await apiFetch(`/recordings/${serverId}`, {}, token);
     if (!res.ok) throw new Error(`No se pudo consultar el resumen (HTTP ${res.status})`);
     const detail: Recording = await res.json();
     if (detail.summary) return detail;
@@ -676,6 +689,10 @@ export default function App() {
   const [serverNotes, setServerNotes] = useState<Recording[]>([]);
   const [locals, setLocals] = useState<LocalNote[]>([]);
   const [serverOk, setServerOk] = useState(true);
+  const [apiToken, setApiToken] = useState(() => localStorage.getItem(TOKEN_KEY) ?? ENV_TOKEN);
+  const [tokenDraft, setTokenDraft] = useState(apiToken);
+  const [showSettings, setShowSettings] = useState(false);
+  const [needsToken, setNeedsToken] = useState(false);
   const [q, setQ] = useState('');
   const [sel, setSel] = useState<NoteView | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -695,7 +712,14 @@ export default function App() {
     const localList = await listLocalNotes().catch(() => [] as LocalNote[]);
     setLocals(localList);
     try {
-      const r = await fetch(`${API}/recordings?q=${encodeURIComponent(q)}`);
+      const r = await apiFetch(`/recordings?q=${encodeURIComponent(q)}`, {}, apiToken);
+      if (r.status === 401) {
+        setNeedsToken(true);
+        setServerNotes([]);
+        setServerOk(false);
+        return;
+      }
+      setNeedsToken(false);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
       const serverList: Recording[] = Array.isArray(data) ? data : [];
@@ -729,7 +753,7 @@ export default function App() {
       setServerNotes([]);
       setServerOk(false);
     }
-  }, [q]);
+  }, [q, apiToken]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -821,7 +845,7 @@ export default function App() {
 
     if (note.serverId) {
       try {
-        const r = await fetch(`${API}/recordings/${note.serverId}`);
+        const r = await apiFetch(`/recordings/${note.serverId}`, {}, apiToken);
         if (r.ok) {
           const detail: Recording = await r.json();
           view = {
@@ -833,6 +857,9 @@ export default function App() {
             hasServerAudio: !!detail.audioPath,
             title: detail.title || note.title,
           };
+        } else if (r.status === 401) {
+          setNeedsToken(true);
+          setError('Token de API inválido o ausente. Configuralo en Ajustes (⚙).');
         } else if (r.status === 404) {
           view = {
             ...note,
@@ -873,7 +900,7 @@ export default function App() {
     const fd = new FormData();
     fd.append('audio', blob, 'nota.webm');
     fd.append('title', local.title);
-    const r = await fetch(`${API}/recordings`, { method: 'POST', body: fd });
+    const r = await apiFetch('/recordings', { method: 'POST', body: fd }, apiToken);
     if (!r.ok) throw new Error(`No se pudo subir el audio (HTTP ${r.status})`);
     return r.json();
   };
@@ -881,7 +908,7 @@ export default function App() {
   const uploadAudioToServer = async (serverId: string, blob: Blob) => {
     const fd = new FormData();
     fd.append('audio', blob, 'nota.webm');
-    const r = await fetch(`${API}/recordings/${serverId}/audio`, { method: 'POST', body: fd });
+    const r = await apiFetch(`/recordings/${serverId}/audio`, { method: 'POST', body: fd }, apiToken);
     if (!r.ok) throw new Error(`No se pudo re-subir el audio (HTTP ${r.status})`);
     return r.json();
   };
@@ -919,30 +946,30 @@ export default function App() {
           if (!blob) throw new Error('El audio local ya fue liberado.');
           detail = await uploadAudioToServer(serverId, blob);
         }
-        const r = await fetch(`${API}/recordings/${serverId}/transcribe`, { method: 'POST' });
+        const r = await apiFetch(`/recordings/${serverId}/transcribe`, { method: 'POST' }, apiToken);
         if (!r.ok) throw new Error(await r.text() || `Error al transcribir (HTTP ${r.status})`);
         detail = await r.json();
       }
 
       if (!note.summary || needsTranscribe) {
-        const r = await fetch(`${API}/recordings/${serverId}/summarize`, {
+        const r = await apiFetch(`/recordings/${serverId}/summarize`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ template: 'class' }),
-        });
+        }, apiToken);
         if (!r.ok) throw new Error(await r.text() || `Error al resumir (HTTP ${r.status})`);
         const started: Recording = await r.json();
         if (started.status === 'summarizing') {
           setServerNotes((prev) => prev.map((s) => (s.id === serverId ? { ...s, status: 'summarizing', error: undefined } : s)));
           setSel((prev) => (prev ? { ...prev, status: 'summarizing' } : prev));
-          detail = await waitForSummary(serverId);
+          detail = await waitForSummary(serverId, apiToken);
         } else {
           detail = started;
         }
       }
 
       if (!detail) {
-        const r = await fetch(`${API}/recordings/${serverId}`);
+        const r = await apiFetch(`/recordings/${serverId}`, {}, apiToken);
         if (r.ok) detail = await r.json();
       }
 
@@ -994,11 +1021,11 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const r = await fetch(`${API}/recordings/${sel.serverId}/summarize`, {
+      const r = await apiFetch(`/recordings/${sel.serverId}/summarize`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ template: 'class' }),
-      });
+      }, apiToken);
       if (!r.ok) throw new Error(await r.text() || `HTTP ${r.status}`);
       const started: Recording = await r.json();
       if (started.status === 'summarizing') {
@@ -1006,7 +1033,7 @@ export default function App() {
         setSel({ ...sel, status: 'summarizing' });
       }
       const detail = started.status === 'summarizing'
-        ? await waitForSummary(sel.serverId)
+        ? await waitForSummary(sel.serverId, apiToken)
         : started;
       await syncLocal(sel.serverId, detail);
       setSel({ ...sel, ...detail, hasServerAudio: !!detail.audioPath });
@@ -1043,11 +1070,11 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const r = await fetch(`${API}/recordings/${sel.serverId}/ask`, {
+      const r = await apiFetch(`/recordings/${sel.serverId}/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question }),
-      });
+      }, apiToken);
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
       setAnswer(j.answer || 'Sin respuesta.');
@@ -1065,7 +1092,7 @@ export default function App() {
     setError(null);
     try {
       if (sel.serverId) {
-        const r = await fetch(`${API}/recordings/${sel.serverId}`, { method: 'DELETE' });
+        const r = await apiFetch(`/recordings/${sel.serverId}`, { method: 'DELETE' }, apiToken);
         if (!r.ok && r.status !== 404) throw new Error(`No se pudo eliminar del servidor (HTTP ${r.status})`);
       }
       if (sel.localId) await deleteLocalNote(sel.localId);
@@ -1107,6 +1134,20 @@ export default function App() {
     }
   };
 
+  const saveToken = () => {
+    const t = tokenDraft.trim();
+    if (t) localStorage.setItem(TOKEN_KEY, t);
+    else localStorage.removeItem(TOKEN_KEY);
+    setApiToken(t);
+    setNeedsToken(false);
+    setError(null);
+  };
+
+  const toggleSettings = () => {
+    setTokenDraft(apiToken);
+    setShowSettings((v) => !v);
+  };
+
   const onTimeUpdate = (e: SyntheticEvent<HTMLAudioElement>) => {
     const t = e.currentTarget.currentTime;
     if (!sel) return;
@@ -1121,9 +1162,12 @@ export default function App() {
           <h1>Lecmap</h1>
           <p className="tagline">Tus clases, en un mapa</p>
         </div>
-        <button className={`btn ${rec ? 'btn-recording' : 'btn-primary'}`} onClick={toggleRec} disabled={busy}>
-          {rec ? '■ Detener' : '● Grabar'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="btn btn-secondary" onClick={toggleSettings} title="Ajustes de API">⚙</button>
+          <button className={`btn ${rec ? 'btn-recording' : 'btn-primary'}`} onClick={toggleRec} disabled={busy}>
+            {rec ? '■ Detener' : '● Grabar'}
+          </button>
+        </div>
       </div>
 
       <div className="toolbar">
@@ -1135,6 +1179,41 @@ export default function App() {
         />
         <button className="btn btn-secondary" onClick={load} disabled={busy}>Buscar</button>
       </div>
+
+      {showSettings && (
+        <div className="settings-panel">
+          <div className="settings-row">
+            <span className="settings-label">API</span>
+            <code className="settings-url">{API}</code>
+          </div>
+          <form
+            className="settings-row"
+            onSubmit={(e) => { e.preventDefault(); saveToken(); }}
+          >
+            <input
+              className="search-input"
+              type="password"
+              placeholder="Token de API (si el backend tiene API_TOKEN)"
+              value={tokenDraft}
+              onChange={(e) => setTokenDraft(e.target.value)}
+              autoComplete="off"
+            />
+            <button className="btn btn-secondary" type="submit">Guardar token</button>
+            {apiToken && (
+              <button
+                className="btn btn-secondary"
+                type="button"
+                onClick={() => { setTokenDraft(''); localStorage.removeItem(TOKEN_KEY); setApiToken(''); setNeedsToken(false); }}
+              >
+                Quitar
+              </button>
+            )}
+          </form>
+          <p className="settings-help">
+            El token se guarda solo en este navegador y se manda como <code>Authorization: Bearer</code>.
+          </p>
+        </div>
+      )}
 
       {error && (
         <div className="error-msg" style={{ marginBottom: 12 }}>
@@ -1153,7 +1232,12 @@ export default function App() {
 
       <div className="main-grid">
         <div className="sidebar">
-          {!serverOk && locals.length === 0 && (
+          {needsToken && (
+            <div className="error-msg" style={{ margin: '0 0 12px' }}>
+              La API requiere token. Abrí <strong>Ajustes</strong> (⚙) y pegalo.
+            </div>
+          )}
+          {!serverOk && !needsToken && locals.length === 0 && (
             <p style={{ color: 'var(--text2)', textAlign: 'center', marginTop: 20 }}>
               Sin conexión al servidor. Las notas locales se pueden grabar y analizar cuando vuelva la red.
             </p>

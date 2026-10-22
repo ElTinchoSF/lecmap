@@ -2,6 +2,10 @@
 
 Base pública: `https://api.lecmap.app` (local: `http://localhost:3001`, Android emulador: `http://10.0.2.2:3001`, dispositivo: IP LAN).
 
+## Autenticación
+
+Si el backend define `API_TOKEN`, todas las rutas exigen `Authorization: Bearer <token>` (o `X-API-Token`) **excepto** `GET /health` y `GET /files/:name`. Sin token o con uno inválido responde **401** `{ error: "Token de API inválido o ausente" }`. Si `API_TOKEN` está vacío, la API queda abierta (modo desarrollo). La web guarda el token en `localStorage` y Android en `SharedPreferences` (`notas_ia` → `api_token`).
+
 ## Modelos
 
 Recording: `{ id, title, status: queued|transcribing|summarizing|ready|error, audioPath?, youtubeUrl?, transcript?: Segment[], summary?, mindmap?, error?, createdAt }`
@@ -31,7 +35,7 @@ Solo `timeline` y `steps` son cronológicos. El backend normaliza los formatos v
 - `POST /recordings/:id/transcribe` lanza STT (Groq `whisper-large-v3`). Si termina bien, guarda la transcripción, **borra el archivo de audio del servidor** y deja `audioPath: null`.
 - `POST /recordings/:id/summarize` `{ template?: general|meeting|class }` -> **202** `{ id, status: "summarizing" }`. El resumen corre en segundo plano por bloques (para respetar el límite de 8.000 tokens/minuto de Groq en clases largas). El cliente debe consultar `GET /recordings/:id` cada pocos segundos hasta que aparezca `summary` o `status: "error"`.
 - `POST /recordings/:id/ask` `{ question }` -> `{ answer, citations: [{start,end}] }` (lo usa **ApIA**). Selecciona los fragmentos más relevantes de la transcripción y agrega el resumen, así funciona también en clases largas.
-- `GET /health` -> `{ ok: true, openai: boolean, stt, chat }`
+- `GET /health` -> `{ ok: true, openai: boolean, stt, chat, auth: boolean }`
 
 ## Persistencia
 

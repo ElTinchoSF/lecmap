@@ -40,7 +40,7 @@ Fuera de v1: auto-join calendario, Wear OS, cifrado E2E.
 # backend
 cd backend
 npm install
-copy .env.example .env  # OPENAI_API_KEY=gsk_... (Groq), OPENAI_BASE_URL=https://api.groq.com/openai/v1
+copy .env.example .env  # OPENAI_API_KEY=gsk_... (Groq), OPENAI_BASE_URL=https://api.groq.com/openai/v1, API_TOKEN=... (opcional)
 npm run dev  # :3001
 
 # web
@@ -97,7 +97,7 @@ Dejá ambas ventanas abiertas. El túnel usa `%USERPROFILE%\.cloudflared\config.
 
 - La PC tiene que quedar encendida con el backend y el túnel corriendo.
 - Si el túnel se reinicia, la URL sigue siendo `https://api.lecmap.app`.
-- El túnel no tiene login propio: cualquiera con la URL puede llamar a la API. No la compartas; más adelante se puede agregar un token.
+- El túnel no tiene login propio. Si el backend define `API_TOKEN`, todas las rutas menos `/health` y `/files` exigen `Authorization: Bearer <token>`. En la web se pega en **Ajustes (⚙)** y en Android en **Cambiar servidor**; el token queda guardado en cada dispositivo.
 - Para la misma red se puede usar directamente `http://IP_DE_LA_PC:3001/` (más rápido y sin límite de tiempo del túnel).
 
 Para la misma red, el puerto 3001 debe estar permitido en el firewall de Windows. En una consola **como administrador**:

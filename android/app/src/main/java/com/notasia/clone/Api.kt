@@ -81,10 +81,20 @@ interface Api {
 object Net {
   const val DEFAULT_BASE_URL = "http://10.0.2.2:3001/"
 
+  /** Token opcional de la API. Se lee en cada request, así el cambio es inmediato. */
+  @Volatile
+  var apiToken: String = ""
+
   private var cachedUrl: String? = null
   private var cachedApi: Api? = null
 
   private val client = OkHttpClient.Builder()
+    .addInterceptor { chain ->
+      val token = apiToken.trim()
+      val request = if (token.isEmpty()) chain.request()
+      else chain.request().newBuilder().header("Authorization", "Bearer $token").build()
+      chain.proceed(request)
+    }
     .addInterceptor(HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC })
     .connectTimeout(30, TimeUnit.SECONDS)
     .readTimeout(180, TimeUnit.SECONDS)

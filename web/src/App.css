@@ -111,6 +111,42 @@ body {
 
 .search-input:focus { outline: none; border-color: var(--accent); }
 
+.settings-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.settings-label {
+  color: var(--text2);
+  font-size: 0.85rem;
+  min-width: 34px;
+}
+
+.settings-url {
+  color: var(--text2);
+  font-size: 0.8rem;
+  word-break: break-all;
+}
+
+.settings-help {
+  color: var(--text2);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
 .main-grid {
   display: grid;
   grid-template-columns: 340px 1fr;
