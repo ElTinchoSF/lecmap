@@ -60,6 +60,17 @@ object SupabaseAuth {
   private var cachedUrl: String? = null
 
   private val client = okhttp3.OkHttpClient.Builder()
+    .addInterceptor { chain ->
+      val cfg = config
+      val request = if (cfg != null) {
+        chain.request().newBuilder()
+          .header("apikey", cfg.anonKey)
+          .build()
+      } else {
+        chain.request()
+      }
+      chain.proceed(request)
+    }
     .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
     .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
     .build()
@@ -95,8 +106,14 @@ object SupabaseAuth {
   /** Login con email+password. */
   suspend fun signIn(email: String, password: String): AuthRes {
     val a = api() ?: throw AuthException("Supabase no configurado")
+    android.util.Log.d("SupabaseAuth", "signIn → POST auth/v1/token?grant_type=password")
     val r = a.signIn(SignInReq(email, password))
-    if (!r.isSuccessful) throw AuthException(parseError(r))
+    android.util.Log.d("SupabaseAuth", "signIn response: ${r.code()} success=${r.isSuccessful}")
+    if (!r.isSuccessful) {
+      val body = try { r.errorBody()?.string() } catch (_: Exception) { null }
+      android.util.Log.e("SupabaseAuth", "signIn error body: $body")
+      throw AuthException(parseError(r))
+    }
     return r.body() ?: throw AuthException("Respuesta vacía del servidor")
   }
 

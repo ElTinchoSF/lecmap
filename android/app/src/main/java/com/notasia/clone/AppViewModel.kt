@@ -177,9 +177,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     refresh()
   }
 
-  private suspend fun tryRefreshToken() {
-    if (refreshToken.isEmpty()) return
-    try {
+  private suspend fun tryRefreshToken(): Boolean {
+    if (refreshToken.isEmpty()) return false
+    return try {
       val res = withContext(Dispatchers.IO) {
         SupabaseAuth.refresh(refreshToken)
       }
@@ -190,8 +190,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         .putString("auth_access_token", accessToken)
         .putString("auth_refresh_token", refreshToken)
         .apply()
+      true
     } catch (_: Exception) {
-      // Si el refresh falla, el 401 del backend hará que se muestre el login.
+      false
     }
   }
 
@@ -210,10 +211,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, server)
+        error = null
       } catch (e: Exception) {
         val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, emptyList())
-        if (locals.isEmpty() || (e is HttpException && e.code() == 401)) error = friendly(e)
+        if (e is HttpException && e.code() == 401) {
+          // Token expirado: intentar refresh y reintentar una vez.
+          val refreshed = tryRefreshToken()
+          if (refreshed) {
+            try {
+              val server = withContext(Dispatchers.IO) { api.list(query).items }
+              withContext(Dispatchers.IO) {
+                for (dto in server) dto.id?.let { store.updateFromServer(it, dto) }
+              }
+              val locals2 = withContext(Dispatchers.IO) { store.list() }
+              list = merge(locals2, server)
+              error = null
+              return@launch
+            } catch (_: Exception) { /* cae al error de abajo */ }
+          }
+          // Sesión inválida: volver al login.
+          isLoggedIn = false
+          Net.apiToken = ""
+        } else if (locals.isEmpty()) {
+          error = friendly(e)
+        }
       }
     }
   }
@@ -566,6 +588,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
   private fun friendly(e: Exception): String =
     if (e is HttpException && e.code() == 401)
-      "Token de API inválido o ausente. Configuralo en Cambiar servidor."
+      "Sesión expirada. Volvé a iniciar sesión."
     else e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 }
