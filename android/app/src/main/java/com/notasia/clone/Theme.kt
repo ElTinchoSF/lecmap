@@ -1,6 +1,7 @@
 package com.notasia.clone
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
@@ -24,6 +25,19 @@ val BranchColors = listOf(
   Color(0xFFFBBF24),
   Color(0xFFF472B6),
   Color(0xFF22D3EE),
+)
+
+@Composable
+fun inputColors() = OutlinedTextFieldDefaults.colors(
+  focusedBorderColor = Accent,
+  unfocusedBorderColor = BorderCol,
+  focusedTextColor = TextPrimary,
+  unfocusedTextColor = TextPrimary,
+  focusedLabelColor = Accent,
+  unfocusedLabelColor = TextSecondary,
+  cursorColor = Accent,
+  focusedContainerColor = Surface1,
+  unfocusedContainerColor = Surface1,
 )
 
 @Composable

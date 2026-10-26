@@ -126,6 +126,12 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
     vm.refresh()
   }
 
+  // Auth gate: si Supabase está configurado y no hay sesión, mostrar login.
+  if (SupabaseAuth.config != null && !vm.authLoading && !vm.isLoggedIn) {
+    LoginScreen(vm)
+    return
+  }
+
   // El servicio guarda la nota local aunque la app esté en segundo plano.
   LaunchedEffect(RecordingState.savedLocalId) {
     if (RecordingState.consumeSaved() != null) vm.refresh()
@@ -249,7 +255,6 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
 
   if (showServer) {
     var draft by remember { mutableStateOf(vm.serverUrl) }
-    var tokenDraft by remember { mutableStateOf(vm.apiToken) }
     var urlError by remember { mutableStateOf<String?>(null) }
     AlertDialog(
       onDismissRequest = { showServer = false },
@@ -279,30 +284,11 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
             },
             colors = fieldColors(),
           )
-          Spacer(Modifier.height(10.dp))
-          OutlinedTextField(
-            value = tokenDraft,
-            onValueChange = { tokenDraft = it },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Token de API") },
-            placeholder = { Text("Vacío si el backend no usa API_TOKEN") },
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-            colors = fieldColors(),
-          )
-          Spacer(Modifier.height(8.dp))
-          Text(
-            "El token protege las notas y el uso de Groq. Se guarda en este dispositivo.",
-            color = TextSecondary,
-            fontSize = 11.sp,
-            lineHeight = 16.sp,
-          )
         }
       },
       confirmButton = {
         TextButton(onClick = {
-          val err = vm.updateServerUrl(draft, tokenDraft)
+          val err = vm.updateServerUrl(draft)
           if (err == null) showServer = false else urlError = err
         }) { Text("Guardar") }
       },

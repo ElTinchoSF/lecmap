@@ -23,6 +23,39 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   private val prefs = app.getSharedPreferences("notas_ia", Context.MODE_PRIVATE)
   private val store = LocalStore(app)
 
+  // ---------- Auth state ----------
+  var authLoading by mutableStateOf(true)
+    private set
+  var isLoggedIn by mutableStateOf(false)
+    private set
+  var userEmail by mutableStateOf(prefs.getString("auth_email", "") ?: "")
+    private set
+  var authError by mutableStateOf<String?>(null)
+    private set
+
+  private var accessToken = prefs.getString("auth_access_token", "") ?: ""
+  private var refreshToken = prefs.getString("auth_refresh_token", "") ?: ""
+
+  init {
+    // Configurar Supabase desde SharedPreferences (se setea en la primera corrida
+    // o desde Ajustes). Si no está configurado, la app funciona sin auth.
+    val sbUrl = prefs.getString("supabase_url", "") ?: ""
+    val sbKey = prefs.getString("supabase_anon_key", "") ?: ""
+    if (sbUrl.isNotEmpty() && sbKey.isNotEmpty()) {
+      SupabaseAuth.config = SupabaseConfig(sbUrl, sbKey)
+    }
+    // Si hay tokens guardados, restaurar sesión.
+    if (accessToken.isNotEmpty()) {
+      isLoggedIn = true
+      Net.apiToken = accessToken
+      // Intentar refresh en background para mantener la sesión válida.
+      viewModelScope.launch { tryRefreshToken() }
+    } else {
+      Net.apiToken = ""
+    }
+    authLoading = false
+  }
+
   var list by mutableStateOf<List<RecordingDto>>(emptyList())
     private set
   var selected by mutableStateOf<RecordingDto?>(null)
@@ -42,30 +75,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   )
     private set
 
-  var apiToken by mutableStateOf(prefs.getString("api_token", "") ?: "")
-    private set
-
-  init {
-    Net.apiToken = apiToken
-  }
-
   private val api get() = Net.api(serverUrl)
 
   /**
-   * Guarda la URL y el token. Devuelve null si quedó guardado, o el motivo
+   * Guarda la URL del servidor. Devuelve null si quedó guardada, o el motivo
    * del rechazo si la URL no es válida (en ese caso no se persiste nada).
    */
-  fun updateServerUrl(url: String, token: String = apiToken): String? {
+  fun updateServerUrl(url: String): String? {
     val normalized = when (val checked = Net.check(url)) {
       is ServerUrl.Valid -> checked.url
       is ServerUrl.Invalid -> return checked.reason
     }
     serverUrl = normalized
-    apiToken = token.trim()
-    Net.apiToken = apiToken
     prefs.edit()
       .putString("server_url", normalized)
-      .putString("api_token", apiToken)
       .apply()
     error = null
     selected = null
@@ -74,6 +97,103 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   fun search() = refresh()
+
+  // ---------- Auth methods ----------
+
+  fun signIn(email: String, password: String) {
+    viewModelScope.launch {
+      authLoading = true
+      authError = null
+      try {
+        val res = withContext(Dispatchers.IO) {
+          SupabaseAuth.signIn(email.trim(), password)
+        }
+        persistAuth(res)
+      } catch (e: Exception) {
+        authError = e.message ?: "Error al iniciar sesión"
+      } finally {
+        authLoading = false
+      }
+    }
+  }
+
+  fun signUp(email: String, password: String) {
+    viewModelScope.launch {
+      authLoading = true
+      authError = null
+      try {
+        val res = withContext(Dispatchers.IO) {
+          SupabaseAuth.signUp(email.trim(), password)
+        }
+        persistAuth(res)
+      } catch (e: Exception) {
+        authError = e.message ?: "Error al crear la cuenta"
+      } finally {
+        authLoading = false
+      }
+    }
+  }
+
+  fun signOut() {
+    viewModelScope.launch {
+      val token = accessToken
+      withContext(Dispatchers.IO) { SupabaseAuth.signOut(token) }
+      accessToken = ""
+      refreshToken = ""
+      isLoggedIn = false
+      userEmail = ""
+      Net.apiToken = ""
+      prefs.edit()
+        .remove("auth_access_token")
+        .remove("auth_refresh_token")
+        .remove("auth_email")
+        .apply()
+      list = emptyList()
+      selected = null
+    }
+  }
+
+  /** Configura Supabase (URL + anon key). Se llama desde Ajustes o al iniciar. */
+  fun configureSupabase(url: String, anonKey: String) {
+    val cleanUrl = url.trim().let { if (it.endsWith("/")) it else "$it/" }
+    SupabaseAuth.config = SupabaseConfig(cleanUrl, anonKey.trim())
+    prefs.edit()
+      .putString("supabase_url", cleanUrl)
+      .putString("supabase_anon_key", anonKey.trim())
+      .apply()
+  }
+
+  private fun persistAuth(res: AuthRes) {
+    accessToken = res.accessToken
+    refreshToken = res.refreshToken
+    isLoggedIn = true
+    userEmail = res.user?.email ?: ""
+    Net.apiToken = accessToken
+    prefs.edit()
+      .putString("auth_access_token", accessToken)
+      .putString("auth_refresh_token", refreshToken)
+      .putString("auth_email", userEmail)
+      .apply()
+    refresh()
+  }
+
+  private suspend fun tryRefreshToken() {
+    if (refreshToken.isEmpty()) return
+    try {
+      val res = withContext(Dispatchers.IO) {
+        SupabaseAuth.refresh(refreshToken)
+      }
+      accessToken = res.accessToken
+      refreshToken = res.refreshToken
+      Net.apiToken = accessToken
+      prefs.edit()
+        .putString("auth_access_token", accessToken)
+        .putString("auth_refresh_token", refreshToken)
+        .apply()
+    } catch (_: Exception) {
+      // Si el refresh falla, el 401 del backend hará que se muestre el login.
+    }
+  }
 
   /**
    * Lista las notas locales y las del servidor. La copia local es la fuente
