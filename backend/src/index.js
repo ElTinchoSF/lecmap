@@ -216,7 +216,12 @@ async function openaiTranscribe(filePath) {
     headers: { Authorization: `Bearer ${OPENAI_KEY}` },
     body: form,
   });
-  if (!res.ok) throw new Error(`Whisper error: ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    // upstream=true: el fallo vino de Groq (502 para el cliente, no 500 local).
+    const err = new Error(`Whisper error: ${res.status} ${await res.text()}`);
+    err.upstream = true;
+    throw err;
+  }
   return await res.json();
 }
 
@@ -555,7 +560,12 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
     return { ...saved, audioPath: null };
   } catch (e) {
     console.error('[transcribe] error:', e.message);
-    return setStatus(r.id, 'error', e.message);
+    setStatus(r.id, 'error', e.message);
+    // Error real = status 5xx (nunca 200): los clientes chequean r.ok y hoy el
+    // fallo pasaba silencioso. El estado de la nota ya quedó en 'error'.
+    return reply
+      .code(e.upstream ? 502 : 500)
+      .send({ id: r.id, status: 'error', error: e.message });
   }
 });
 

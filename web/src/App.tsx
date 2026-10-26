@@ -950,7 +950,12 @@ export default function App() {
           detail = await uploadAudioToServer(serverId, blob);
         }
         const r = await apiFetch(`/recordings/${serverId}/transcribe`, { method: 'POST' }, apiToken);
-        if (!r.ok) throw new Error(await r.text() || `Error al transcribir (HTTP ${r.status})`);
+        if (!r.ok) {
+          const body = await r.text();
+          let msg = body;
+          try { msg = JSON.parse(body)?.error || body; } catch { /* cuerpo no JSON */ }
+          throw new Error(msg || `Error al transcribir (HTTP ${r.status})`);
+        }
         detail = await r.json();
       }
 
