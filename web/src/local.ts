@@ -14,7 +14,7 @@ export type LocalNote = {
   error?: string;
   transcript: LocalSegment[];
   summary: string | null;
-  mindmap: any;
+  mindmap: unknown;
   hasAudio: boolean;
 };
 
@@ -40,15 +40,24 @@ function openDb(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
-function request<T>(store: IDBObjectStore, method: 'get' | 'getAll' | 'put' | 'delete', value?: any): Promise<T> {
+type PutValue = { value: unknown; key?: IDBValidKey };
+
+function request<T>(
+  store: IDBObjectStore,
+  method: 'get' | 'getAll' | 'put' | 'delete',
+  value?: IDBValidKey | PutValue,
+): Promise<T> {
   return new Promise((resolve, reject) => {
+    // El `method` define el tipo en cada call site: los casts son seguros acá.
     const req = method === 'getAll'
       ? store.getAll()
       : method === 'get'
-        ? store.get(value)
+        ? store.get(value as IDBValidKey)
         : method === 'put'
-          ? ('key' in value ? store.put(value.value, value.key) : store.put(value.value))
-          : store.delete(value);
+          ? ('key' in (value as PutValue)
+            ? store.put((value as PutValue).value, (value as PutValue).key)
+            : store.put((value as PutValue).value))
+          : store.delete(value as IDBValidKey);
     req.onsuccess = () => resolve(req.result as T);
     req.onerror = () => reject(req.error || new Error('Error de IndexedDB'));
   });

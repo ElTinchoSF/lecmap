@@ -62,7 +62,7 @@ const ALL_LAYOUTS: MindLayout[] = [
 ];
 type Recording = {
   id: string; title: string; status: string; error?: string;
-  audioPath?: string | null; transcript: Segment[]; summary: string | null; mindmap: any;
+  audioPath?: string | null; transcript: Segment[]; summary: string | null; mindmap: unknown;
   createdAt?: string;
 };
 
@@ -81,30 +81,66 @@ function fmtTimestamp(s: number) {
   return [h, m, sec].map((v) => String(v).padStart(2, '0')).join(':');
 }
 
-const str = (v: any) => (v === undefined || v === null ? '' : String(v).trim());
-const strList = (v: any) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
+// JSON crudo que llega del servidor: cualquier campo puede venir ausente o con
+// un tipo inesperado, por eso todo se declara `unknown` y se estrecha en uso.
+type RawBranch = {
+  label?: unknown; detail?: unknown; points?: unknown;
+  branches?: unknown; children?: unknown;
+};
+type RawTopic = { title?: unknown; label?: unknown; branches?: unknown };
+type RawNode = { id?: unknown; label?: unknown; detail?: unknown; parent?: unknown };
+type RawItem = { name?: unknown; label?: unknown; values?: unknown };
+type RawStep = { label?: unknown; detail?: unknown; points?: unknown };
+type RawEvent = { date?: unknown; label?: unknown; title?: unknown; detail?: unknown; points?: unknown };
+type RawTerm = { term?: unknown; label?: unknown; name?: unknown; definition?: unknown; detail?: unknown; points?: unknown };
+type RawCause = { label?: unknown; cause?: unknown; detail?: unknown; effects?: unknown; points?: unknown };
+type RawProblem = { label?: unknown; problem?: unknown; detail?: unknown; solutions?: unknown; points?: unknown };
+type RawMindmap = {
+  title?: unknown; layout?: unknown; root?: unknown;
+  topics?: unknown; branches?: unknown; nodes?: unknown; children?: unknown;
+  dimensions?: unknown; items?: unknown; steps?: unknown; events?: unknown;
+  terms?: unknown; causes?: unknown; problems?: unknown;
+};
+type TopicNode = { id: string; label: string; detail?: string; parent: string | null };
 
-function asBranches(list: any, depth = 0): MindBranch[] {
-  if (!Array.isArray(list) || depth > 4) return [];
-  return list
-    .map((b: any) => ({
+/** Narrower de array: devuelve `[]` cuando el valor no es un array. */
+function arr<T>(v: unknown): T[] {
+  return Array.isArray(v) ? (v as T[]) : [];
+}
+
+/** Mensaje legible de cualquier valor lanzado (Error, DOMException o string). */
+function errText(e: unknown, fallback = 'Error'): string {
+  const m = (e as { message?: unknown } | null)?.message;
+  if (typeof m === 'string' && m) return m;
+  if (typeof e === 'string' && e) return e;
+  return fallback;
+}
+
+const str = (v: unknown) => (v === undefined || v === null ? '' : String(v).trim());
+const strList = (v: unknown): string[] => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
+
+function asBranches(list: unknown, depth = 0): MindBranch[] {
+  if (depth > 4) return [];
+  return arr<RawBranch>(list)
+    .map((b) => ({
       label: str(b?.label),
       detail: b?.detail ? String(b.detail) : undefined,
       points: strList(b?.points),
       branches: asBranches(b?.branches ?? b?.children, depth + 1),
     }))
-    .filter((b: MindBranch) => b.label);
+    .filter((b) => b.label);
 }
 
-function buildTopics(mm: any, fallbackTitle: string): MindTopic[] {
-  if (Array.isArray(mm.topics) && mm.topics.length > 0) {
-    const topics = mm.topics
-      .map((t: any, i: number) => {
+function buildTopics(mm: RawMindmap, fallbackTitle: string): MindTopic[] {
+  const mmTopics = arr<RawTopic>(mm.topics);
+  if (mmTopics.length > 0) {
+    const topics = mmTopics
+      .map((t, i) => {
         const branches = asBranches(t?.branches);
         const title = str(t?.title ?? t?.label) || branches[0]?.label || `Tema ${i + 1}`;
         return { title, branches };
       })
-      .filter((t: MindTopic) => t.branches.length > 0);
+      .filter((t) => t.branches.length > 0);
     if (topics.length > 0) return topics;
   }
 
@@ -113,26 +149,27 @@ function buildTopics(mm: any, fallbackTitle: string): MindTopic[] {
     if (branches.length > 0) return [{ title: fallbackTitle || branches[0].label, branches }];
   }
 
-  if (Array.isArray(mm.nodes) && mm.nodes.length > 0) {
-    const nodes = mm.nodes
-      .map((n: any, i: number) => ({
+  const mmNodes = arr<RawNode>(mm.nodes);
+  if (mmNodes.length > 0) {
+    const nodes: TopicNode[] = mmNodes
+      .map((n, i) => ({
         id: str(n?.id) || `n${i + 1}`,
         label: str(n?.label),
         detail: n?.detail ? String(n.detail) : undefined,
         parent: n?.parent ? String(n.parent) : null,
       }))
-      .filter((n: any) => n.label);
+      .filter((n) => n.label);
 
-    const ids = new Set(nodes.map((n: any) => n.id));
-    const childrenOf = new Map<string | null, any[]>();
+    const ids = new Set(nodes.map((n) => n.id));
+    const childrenOf = new Map<string | null, TopicNode[]>();
     for (const n of nodes) {
       const parent = n.parent && ids.has(n.parent) && n.parent !== n.id ? n.parent : null;
-      const arr = childrenOf.get(parent) || [];
-      arr.push(n);
-      childrenOf.set(parent, arr);
+      const arr2 = childrenOf.get(parent) || [];
+      arr2.push(n);
+      childrenOf.set(parent, arr2);
     }
 
-    const toBranch = (n: any): MindBranch => ({
+    const toBranch = (n: TopicNode): MindBranch => ({
       label: n.label,
       detail: n.detail,
       points: [],
@@ -149,7 +186,7 @@ function buildTopics(mm: any, fallbackTitle: string): MindTopic[] {
     if (roots.length === 1 && nodes.length > 2) {
       return [{
         title: baseTitle,
-        branches: nodes.map((n: any) => ({ label: n.label, detail: n.detail, points: [], branches: [] })),
+        branches: nodes.map((n) => ({ label: n.label, detail: n.detail, points: [], branches: [] })),
       }];
     }
     return [{ title: baseTitle, branches: roots.map(toBranch) }];
@@ -160,14 +197,17 @@ function buildTopics(mm: any, fallbackTitle: string): MindTopic[] {
   const title = String(rootLabel || 'Mapa de ideas');
   return [{
     title,
-    branches: (mm.children || [])
-      .map((c: any) => ({
-        label: str(typeof c === 'string' ? c : c?.label),
-        detail: typeof c === 'object' && c?.detail ? String(c.detail) : undefined,
-        points: [],
-        branches: [],
-      }))
-      .filter((b: MindBranch) => b.label),
+    branches: arr<unknown>(mm.children)
+      .map((c) => {
+        const raw = typeof c === 'object' && c !== null ? (c as RawBranch) : undefined;
+        return {
+          label: str(typeof c === 'string' ? c : raw?.label),
+          detail: raw?.detail ? String(raw.detail) : undefined,
+          points: [],
+          branches: [],
+        };
+      })
+      .filter((b) => b.label),
   }];
 }
 
@@ -186,95 +226,97 @@ function emptyData(layout: MindLayout, title: string): MindData {
   };
 }
 
-function buildComparison(mm: any, title: string): MindData | null {
+function buildComparison(mm: RawMindmap, title: string): MindData | null {
   const dimensions = strList(mm.dimensions);
-  const items: MindItem[] = (Array.isArray(mm.items) ? mm.items : [])
-    .map((it: any) => ({
+  const items: MindItem[] = arr<RawItem>(mm.items)
+    .map((it) => ({
       name: str(it?.name ?? it?.label),
-      values: Array.isArray(it?.values) ? it.values.map((v: any) => String(v)) : [],
+      values: arr<unknown>(it?.values).map((v) => String(v)),
     }))
-    .filter((it: MindItem) => it.name);
+    .filter((it) => it.name);
   return items.length > 0 ? { ...emptyData('comparison', title), dimensions, items } : null;
 }
 
-function buildSteps(mm: any, title: string): MindData | null {
-  const steps: MindStep[] = (Array.isArray(mm.steps) ? mm.steps : [])
-    .map((s: any) => ({
+function buildSteps(mm: RawMindmap, title: string): MindData | null {
+  const steps: MindStep[] = arr<RawStep>(mm.steps)
+    .map((s) => ({
       label: str(s?.label),
       detail: s?.detail ? String(s.detail) : undefined,
       points: strList(s?.points),
     }))
-    .filter((s: MindStep) => s.label);
+    .filter((s) => s.label);
   return steps.length > 0 ? { ...emptyData('steps', title), steps } : null;
 }
 
-function buildTimeline(mm: any, title: string): MindData | null {
-  const events: MindEvent[] = (Array.isArray(mm.events) ? mm.events : [])
-    .map((e: any) => ({
+function buildTimeline(mm: RawMindmap, title: string): MindData | null {
+  const events: MindEvent[] = arr<RawEvent>(mm.events)
+    .map((e) => ({
       date: e?.date ? String(e.date) : undefined,
       label: str(e?.label ?? e?.title),
       detail: e?.detail ? String(e.detail) : undefined,
       points: strList(e?.points),
     }))
-    .filter((e: MindEvent) => e.label);
+    .filter((e) => e.label);
   return events.length > 0 ? { ...emptyData('timeline', title), events } : null;
 }
 
-function buildGlossary(mm: any, title: string): MindData | null {
-  const terms: MindTerm[] = (Array.isArray(mm.terms) ? mm.terms : [])
-    .map((t: any) => ({
+function buildGlossary(mm: RawMindmap, title: string): MindData | null {
+  const terms: MindTerm[] = arr<RawTerm>(mm.terms)
+    .map((t) => ({
       term: str(t?.term ?? t?.label ?? t?.name),
       definition: str(t?.definition ?? t?.detail),
       points: strList(t?.points),
     }))
-    .filter((t: MindTerm) => t.term && t.definition);
+    .filter((t) => t.term && t.definition);
   return terms.length > 0 ? { ...emptyData('glossary', title), terms } : null;
 }
 
-function buildCause(mm: any, title: string): MindData | null {
-  const causes: MindCause[] = (Array.isArray(mm.causes) ? mm.causes : [])
-    .map((c: any) => ({
+function buildCause(mm: RawMindmap, title: string): MindData | null {
+  const causes: MindCause[] = arr<RawCause>(mm.causes)
+    .map((c) => ({
       label: str(c?.label ?? c?.cause),
       detail: c?.detail ? String(c.detail) : undefined,
       effects: strList(c?.effects ?? c?.points),
     }))
-    .filter((c: MindCause) => c.label);
+    .filter((c) => c.label);
   return causes.length > 0 ? { ...emptyData('cause', title), causes } : null;
 }
 
-function buildSolution(mm: any, title: string): MindData | null {
-  const problems: MindProblem[] = (Array.isArray(mm.problems) ? mm.problems : [])
-    .map((p: any) => ({
+function buildSolution(mm: RawMindmap, title: string): MindData | null {
+  const problems: MindProblem[] = arr<RawProblem>(mm.problems)
+    .map((p) => ({
       label: str(p?.label ?? p?.problem),
       detail: p?.detail ? String(p.detail) : undefined,
       solutions: strList(p?.solutions ?? p?.points),
     }))
-    .filter((p: MindProblem) => p.label);
+    .filter((p) => p.label);
   return problems.length > 0 ? { ...emptyData('solution', title), problems } : null;
 }
 
 // Normaliza a un modelo con layout elegido por la IA. Si el layout pedido no trae
 // datos, prueba los demás y, como último recurso, cae al mapa de temas.
-function normalizeMindmap(mm: any): MindData | null {
-  if (!mm) return null;
-  const title = str(mm.title);
-  const requested: MindLayout = (ALL_LAYOUTS as string[]).includes(mm.layout)
-    ? (mm.layout as MindLayout)
+export function normalizeMindmap(mm: unknown): MindData | null {
+  if (!mm || typeof mm !== 'object') return null;
+  const raw = mm as RawMindmap;
+  const title = str(raw.title);
+  const layout = str(raw.layout);
+  const requested: MindLayout = (ALL_LAYOUTS as string[]).includes(layout)
+    ? (layout as MindLayout)
     : 'topics';
 
   const builders: Record<MindLayout, () => MindData | null> = {
     topics: () => {
-      const topics = buildTopics(mm, title);
+      const topics = buildTopics(raw, title);
       return topics.length > 0
         ? { ...emptyData('topics', title || topics[0].title), topics }
         : null;
     },
-    comparison: () => buildComparison(mm, title),
-    steps: () => buildSteps(mm, title),
-    timeline: () => buildTimeline(mm, title),
-    glossary: () => buildGlossary(mm, title),
-    cause: () => buildCause(mm, title),
-    solution: () => buildSolution(mm, title),
+    comparison: () => buildComparison(raw, title),
+    steps: () => buildSteps(raw, title),
+    timeline: () => buildTimeline(raw, title),
+    glossary: () => buildGlossary(raw, title),
+    cause: () => buildCause(raw, title),
+    solution: () => buildSolution(raw, title),
   };
 
   const order = [requested, ...ALL_LAYOUTS.filter((l) => l !== requested)];
@@ -554,7 +596,7 @@ function SolutionView({ data }: { data: MindData }) {
   );
 }
 
-function MindmapView({ mm }: { mm: any }) {
+function MindmapView({ mm }: { mm: unknown }) {
   const data = normalizeMindmap(mm);
   if (!data) return null;
 
@@ -829,15 +871,15 @@ export default function App() {
           await saveAudio(localId, blob);
           await saveLocalNote(note);
           await refreshLocals();
-        } catch (e: any) {
-          setError('No se pudo guardar la grabación en este dispositivo: ' + (e?.message || e));
+        } catch (e) {
+          setError('No se pudo guardar la grabación en este dispositivo: ' + errText(e));
         }
       };
       m.start(1000);
       mr.current = m;
       setRec(true);
-    } catch (e: any) {
-      setError('No se pudo acceder al micrófono: ' + (e?.message || e));
+    } catch (e) {
+      setError('No se pudo acceder al micrófono: ' + errText(e));
     }
   };
 
@@ -1008,10 +1050,10 @@ export default function App() {
         setSel(view);
         await chooseAudio(view);
       }
-    } catch (e: any) {
-      setError(e?.message || 'No se pudo analizar la nota');
+    } catch (e) {
+      setError(errText(e, 'No se pudo analizar la nota'));
       if (local) {
-        const failed = { ...local, status: 'error', error: e?.message || 'Error de análisis' };
+        const failed = { ...local, status: 'error', error: errText(e, 'Error de análisis') };
         await saveLocalNote(failed).catch(() => {});
         await refreshLocals().catch(() => {});
       }
@@ -1046,8 +1088,8 @@ export default function App() {
       await syncLocal(sel.serverId, detail);
       setSel({ ...sel, ...detail, hasServerAudio: !!detail.audioPath });
       await load();
-    } catch (e: any) {
-      setError(e?.message || 'No se pudo resumir');
+    } catch (e) {
+      setError(errText(e, 'No se pudo resumir'));
     } finally {
       setBusy(false);
     }
@@ -1086,8 +1128,8 @@ export default function App() {
       const j = await r.json();
       if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
       setAnswer(j.answer || 'Sin respuesta.');
-    } catch (e: any) {
-      setError(e?.message || 'No se pudo preguntar a ApIA');
+    } catch (e) {
+      setError(errText(e, 'No se pudo preguntar a ApIA'));
     } finally {
       setBusy(false);
     }
@@ -1106,8 +1148,8 @@ export default function App() {
       if (sel.localId) await deleteLocalNote(sel.localId);
       close();
       await load();
-    } catch (e: any) {
-      setError(e?.message || 'No se pudo eliminar la nota');
+    } catch (e) {
+      setError(errText(e, 'No se pudo eliminar la nota'));
     } finally {
       setBusy(false);
     }
@@ -1128,8 +1170,8 @@ export default function App() {
       setSel({ ...sel, hasLocalAudio: false });
       setAudioUrl(null);
       releaseObjectUrl();
-    } catch (e: any) {
-      setError(e?.message || 'No se pudo liberar el audio');
+    } catch (e) {
+      setError(errText(e, 'No se pudo liberar el audio'));
     } finally {
       setBusy(false);
     }
