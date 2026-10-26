@@ -767,13 +767,16 @@ export default function App() {
   }, [q]);
 
   const load = useCallback(async () => {
+    // No fetchear si Supabase está activo pero no hay sesión.
+    if (supabase && !auth.session) return;
     const localList = await listLocalNotes().catch(() => [] as LocalNote[]);
     setLocals(localList);
     try {
       const r = await apiFetch(`/recordings?q=${encodeURIComponent(debouncedQ)}`);
       if (r.status === 401) {
-        // Token expirado o inválido: cerrar sesión para volver al login.
-        if (supabase) await supabase.auth.signOut();
+        // Token expirado: cerrar sesión para volver al login.
+        // Solo si había sesión (evita signOut durante el login).
+        if (supabase && auth.session) await supabase.auth.signOut();
         setServerNotes([]);
         setServerOk(false);
         return;
@@ -811,7 +814,7 @@ export default function App() {
       setServerNotes([]);
       setServerOk(false);
     }
-  }, [debouncedQ]);
+  }, [debouncedQ, auth.session]);
 
   useEffect(() => { load(); }, [load]);
 
