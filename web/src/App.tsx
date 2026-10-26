@@ -742,7 +742,7 @@ export default function App() {
   const [serverNotes, setServerNotes] = useState<Recording[]>([]);
   const [locals, setLocals] = useState<LocalNote[]>([]);
   const [serverOk, setServerOk] = useState(true);
-  const [showSettings, setShowSettings] = useState(false);
+  const [showSettings] = useState(false);
   const [exportTimes, setExportTimes] = useState(true);
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
