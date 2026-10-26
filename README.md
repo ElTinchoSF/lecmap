@@ -50,6 +50,8 @@ npm install
 npm run dev  # :5173, VITE_API_URL=http://localhost:3001
 ```
 
+- **Timeouts de Groq**: `STT_TIMEOUT_MS` y `LLM_TIMEOUT_MS` (ms, default `150000`). Si Groq no responde a tiempo, la nota queda en `error` con el motivo (y la API responde 5xx) en vez de quedarse colgada.
+
 ## Almacenamiento local-first
 
 - **El audio vive en el dispositivo.** La web lo guarda en IndexedDB y Android en `filesDir` (`.m4a`). Grabar **no sube nada**.

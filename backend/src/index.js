@@ -73,6 +73,11 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_BASE = process.env.OPENAI_BASE_URL || 'https://api.groq.com/openai/v1';
 const STT_MODEL = process.env.STT_MODEL || 'whisper-large-v3';
 const CHAT_MODEL = process.env.CHAT_MODEL || 'openai/gpt-oss-120b';
+// Timeouts de Groq: sin signal, un request colgado deja la llamada HTTP abierta
+// para siempre (y al usuario esperando). Debajo del read timeout de Android
+// (180 s). Ver .env.example.
+const STT_TIMEOUT_MS = Number(process.env.STT_TIMEOUT_MS || 150_000);
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 150_000);
 
 const now = () => new Date().toISOString();
 const id = () => Math.random().toString(36).slice(2, 10);
@@ -186,18 +191,43 @@ async function paceChat(messages, maxTokens) {
   }
 }
 
+/**
+ * fetch a Groq con timeout. Errores de red o de timeout se marcan con
+ * upstream=true para que el handler responda 5xx (proveedor caído/colgado)
+ * en vez de un 500 local genérico.
+ */
+async function groqFetch(what, url, options, timeoutMs) {
+  let res;
+  try {
+    res = await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+    const err = new Error(
+      timedOut ? `${what}: timeout tras ${timeoutMs} ms` : `${what}: ${e.message}`,
+    );
+    err.upstream = true;
+    throw err;
+  }
+  return res;
+}
+
 async function openaiChat(messages, { json = false, maxTokens = 3000 } = {}) {
   await paceChat(messages, maxTokens);
-  const res = await fetch(`${OPENAI_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
-    body: JSON.stringify({
-      model: CHAT_MODEL,
-      messages,
-      max_completion_tokens: maxTokens,
-      ...(json ? { response_format: { type: 'json_object' } } : {}),
-    }),
-  });
+  const res = await groqFetch(
+    'AI chat',
+    `${OPENAI_BASE}/chat/completions`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
+      body: JSON.stringify({
+        model: CHAT_MODEL,
+        messages,
+        max_completion_tokens: maxTokens,
+        ...(json ? { response_format: { type: 'json_object' } } : {}),
+      }),
+    },
+    LLM_TIMEOUT_MS,
+  );
   if (!res.ok) throw new Error(`AI chat error: ${res.status} ${await res.text()}`);
   const j = await res.json();
   return j.choices[0].message.content;
@@ -211,11 +241,16 @@ async function openaiTranscribe(filePath) {
   form.append('model', STT_MODEL);
   form.append('response_format', 'verbose_json');
   form.append('timestamp_granularities[]', 'segment');
-  const res = await fetch(`${OPENAI_BASE}/audio/transcriptions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${OPENAI_KEY}` },
-    body: form,
-  });
+  const res = await groqFetch(
+    'Whisper',
+    `${OPENAI_BASE}/audio/transcriptions`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${OPENAI_KEY}` },
+      body: form,
+    },
+    STT_TIMEOUT_MS,
+  );
   if (!res.ok) {
     // upstream=true: el fallo vino de Groq (502 para el cliente, no 500 local).
     const err = new Error(`Whisper error: ${res.status} ${await res.text()}`);
@@ -706,7 +741,9 @@ async function runSummaryJob(id, template) {
     try {
       raw = await openaiChat(messages, { json: true, maxTokens: 4000 });
     } catch (e) {
-      if (/413|429|demasiado grande/i.test(e.message)) throw e;
+      // 413/429: reintentar con menos texto ayuda. Timeout: el reintento solo
+      // duplica la espera, así que se propaga al catch del job.
+      if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
       console.warn('[summarize] JSON final falló, reintento simple:', e.message.slice(0, 140));
       raw = await openaiChat(messages, { json: false, maxTokens: 4000 });
     }
