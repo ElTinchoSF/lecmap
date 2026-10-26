@@ -1,4 +1,8 @@
 import pg from 'pg';
+import dns from 'dns';
+
+// Supabase pooler: el DNS local a veces no resuelve. Forzamos DNS públicos.
+dns.setServers(['8.8.8.8', '1.1.1.1']);
 
 const { Pool } = pg;
 

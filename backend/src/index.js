@@ -5,6 +5,7 @@ import { readFile, writeFile, unlink, readdir, stat } from 'fs/promises';
 import { createReadStream } from 'fs';
 import { mkdirSync } from 'fs';
 import jwt from 'jsonwebtoken';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 import path from 'path';
 import 'dotenv/config';
 import {
@@ -42,9 +43,13 @@ await app.register(cors, {
 });
 await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } });
 
-// Auth con Supabase: validamos el JWT firmado por Supabase.
-// SUPABASE_JWT_SECRET viene de Supabase → Settings → API → JWT Secret.
-const SUPABASE_JWT_SECRET = (process.env.SUPABASE_JWT_SECRET || '').trim();
+// Auth con Supabase: verificamos el JWT firmado con ES256 vía JWKS.
+// SUPABASE_URL = https://<project>.supabase.co (para buscar las claves públicas)
+const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
+let jwks = null;
+if (SUPABASE_URL) {
+  jwks = createRemoteJWKSet(new URL(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`));
+}
 
 app.addHook('onRequest', async (req, reply) => {
   const pathname = (req.url || '').split('?')[0];
@@ -53,7 +58,7 @@ app.addHook('onRequest', async (req, reply) => {
   if (req.method === 'OPTIONS') return;
 
   // Sin configurado → modo dev abierto (sin auth).
-  if (!SUPABASE_JWT_SECRET) {
+  if (!jwks) {
     req.userId = 'dev-user';
     return;
   }
@@ -66,7 +71,10 @@ app.addHook('onRequest', async (req, reply) => {
   }
 
   try {
-    const payload = jwt.verify(bearer, SUPABASE_JWT_SECRET, { algorithms: ['HS256'] });
+    const { payload } = await jwtVerify(bearer, jwks, {
+      issuer: `${SUPABASE_URL}/auth/v1`,
+      audience: 'authenticated',
+    });
     req.userId = payload.sub; // UUID del usuario en Supabase
   } catch {
     reply.header('WWW-Authenticate', 'Bearer');
@@ -145,7 +153,7 @@ async function cleanupOrphanAudio(log) {
   } catch {
     return;
   }
-  const referenced = new Set(listAudioPaths().map((p) => path.resolve(p)));
+  const referenced = new Set((await listAudioPaths()).map((p) => path.resolve(p)));
   let removed = 0;
   for (const name of files) {
     const fp = path.join(uploadsDir, name);
@@ -487,7 +495,7 @@ app.get('/health', async () => ({
   openai: !!OPENAI_KEY,
   stt: STT_MODEL,
   chat: CHAT_MODEL,
-  auth: SUPABASE_JWT_SECRET ? 'supabase' : 'none',
+  auth: jwks ? 'supabase' : 'none',
 }));
 
 app.post('/recordings', async (req) => {
@@ -867,7 +875,7 @@ app.post('/recordings/:id/ask', async (req, reply) => {
 });
 
 const port = Number(process.env.PORT || 3001);
-resetInterrupted();
+await resetInterrupted();
 await cleanupOrphanAudio(app.log);
 setInterval(() => {
   cleanupOrphanAudio(app.log).catch((e) => app.log.warn({ err: e }, 'cleanup de audios falló'));

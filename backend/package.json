@@ -11,6 +11,9 @@
     "@fastify/cors": "^8.5.0",
     "@fastify/multipart": "^8.3.0",
     "dotenv": "^18.0.8",
-    "fastify": "^4.28.0"
+    "fastify": "^4.28.0",
+    "jose": "^6.2.13",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.1"
   }
 }
