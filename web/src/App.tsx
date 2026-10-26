@@ -1387,6 +1387,20 @@ export default function App() {
                 )}
               </div>
 
+              {sel.summary && (
+                <div className="section">
+                  <h3>Resumen</h3>
+                  <div className="summary-box">{sel.summary}</div>
+                </div>
+              )}
+
+              {sel.mindmap && (
+                <div className="section">
+                  <h3>Mapa de ideas</h3>
+                  <MindmapView mm={sel.mindmap} />
+                </div>
+              )}
+
               {sel.transcript.length > 0 && (
                 <div className="section">
                   <div className="transcript-toolbar">
@@ -1414,20 +1428,6 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
-
-              {sel.summary && (
-                <div className="section">
-                  <h3>Resumen</h3>
-                  <div className="summary-box">{sel.summary}</div>
-                </div>
-              )}
-
-              {sel.mindmap && (
-                <div className="section">
-                  <h3>Mapa de ideas</h3>
-                  <MindmapView mm={sel.mindmap} />
                 </div>
               )}
 
