@@ -6,6 +6,9 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.google.gson.Gson
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /** Nota guardada en el teléfono. El audio vive en filesDir; la fila es el índice. */
 data class LocalNote(
@@ -25,8 +28,11 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 1)
   companion object {
     private const val DB_NAME = "lecmap_local.db"
     private const val TABLE = "local_notes"
+    private const val AUDIO_PREFIX = "nota_"
+    private const val AUDIO_SUFFIX = ".m4a"
   }
 
+  private val appContext = context.applicationContext
   private val gson = Gson()
 
   override fun onCreate(db: SQLiteDatabase) {
@@ -76,6 +82,46 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 1)
 
   fun upsert(note: LocalNote) {
     writableDatabase.insertWithOnConflict(TABLE, null, values(note), SQLiteDatabase.CONFLICT_REPLACE)
+  }
+
+  /**
+   * Barrido de seguridad: un `.m4a` en filesDir sin fila asociada quedó huérfano
+   * (p. ej. el proceso murió a mitad de grabación). Crea la nota para que la toma
+   * no se pierda. Idempotente: solo toca archivos sin referencia. Devuelve cuántas
+   * recuperó; nunca lanza.
+   */
+  fun recoverOrphans(): Int = try {
+    val referenced = mutableSetOf<String>()
+    readableDatabase
+      .query(TABLE, arrayOf("audio_file"), "audio_file IS NOT NULL", null, null, null, null)
+      .use { c -> while (c.moveToNext()) c.getString(0)?.let { referenced.add(it) } }
+
+    var recovered = 0
+    appContext.filesDir.listFiles().orEmpty()
+      .filter {
+        it.isFile && it.name.startsWith(AUDIO_PREFIX) && it.name.endsWith(AUDIO_SUFFIX) &&
+          it.length() > 0L && it.absolutePath !in referenced
+      }
+      .forEach { file ->
+        val start = file.name
+          .removePrefix(AUDIO_PREFIX).removeSuffix(AUDIO_SUFFIX).toLongOrNull()
+          ?: file.lastModified()
+        val title = "Nota " + SimpleDateFormat("dd/MM HH:mm", Locale.getDefault()).format(Date(start))
+        upsert(
+          LocalNote(
+            localId = "local_$start",
+            serverId = null,
+            title = title,
+            createdAt = start,
+            status = "local",
+            audioFile = file.absolutePath,
+          )
+        )
+        recovered++
+      }
+    recovered
+  } catch (_: Exception) {
+    0
   }
 
   fun setServerId(localId: String, serverId: String) {

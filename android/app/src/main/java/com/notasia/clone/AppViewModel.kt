@@ -73,6 +73,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
    */
   fun refresh() {
     viewModelScope.launch {
+      // .m4a huérfanos (proceso muerto a mitad de grabación) vuelven como notas.
+      withContext(Dispatchers.IO) { store.recoverOrphans() }
       try {
         val server = withContext(Dispatchers.IO) { api.list(query) }
         withContext(Dispatchers.IO) {

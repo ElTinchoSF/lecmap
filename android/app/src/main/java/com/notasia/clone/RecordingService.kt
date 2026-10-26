@@ -237,7 +237,10 @@ class RecordingService : Service() {
   }
 
   override fun onDestroy() {
-    scope.cancel()
+    // El servicio murió SIN la acción Detener (lo mató el sistema o la app):
+    // el .m4a NO se borra. Se corta la grabación y se guarda la nota local para
+    // que la toma sea recuperable; si eso falla, el barrido de huérfanos de
+    // LocalStore.recoverOrphans() la recupera al próximo refresh.
     if (recorder != null) {
       try {
         recorder?.stop()
@@ -245,12 +248,33 @@ class RecordingService : Service() {
       }
       recorder?.release()
       recorder = null
+      val file = output
+      val start = if (startedAt > 0L) startedAt else System.currentTimeMillis()
+      output = null
       startedAt = 0L
       RecordingState.isRecording = false
       RecordingState.startedAt = 0L
-      output?.delete()
-      output = null
+
+      if (file != null && file.exists() && file.length() > 0L) {
+        try {
+          val title = "Nota " + SimpleDateFormat("dd/MM HH:mm", Locale.getDefault())
+            .format(Date(start))
+          LocalStore(applicationContext).upsert(
+            LocalNote(
+              localId = "local_$start",
+              serverId = null,
+              title = title,
+              createdAt = start,
+              status = "local",
+              audioFile = file.absolutePath,
+            )
+          )
+        } catch (_: Exception) {
+          // El archivo queda en filesDir y lo recupera recoverOrphans().
+        }
+      }
     }
+    scope.cancel()
     super.onDestroy()
   }
 }
