@@ -39,7 +39,7 @@ Aceptación: `Net.normalize`/`updateServerUrl` rechazan (a) cualquier string que
 | T3 | S3 | inline | ✅ hecho | GREEN: server colgante + STT_TIMEOUT_MS=2000 → HTTP 502 en 2.02s (`timeout tras 2000 ms`); regresión real Groq 200/ready; documentado en README + .env.example |
 | T4 | S4 | inline | ✅ hecho | RED en código (`output?.delete()`, git show HEAD~1); GREEN en dispositivo: force-stop a mitad de grabación → archivo intacto (30 KB) + nota `Nota 26/10 08:26` recuperada por recoverOrphans y visible en UI |
 | T5 | S5 | inline | ✅ hecho | commit `e46c4a1`: `strict:true`, 0 `any`, `tsc -b` + `vite build` OK, probe diferencial old-vs-new idéntico en 20 fixtures |
-| T6 | S6 | inline | ✅ hecho | commit `a0d4bf4`: RED: `normalize()` devolvía `http://127.0.0.1/3001/` sin chistar (fallo puerto 80 en campo) → GREEN: `NetCheckTest` 6/6 (`testDebugUnitTest`), `assembleDebug` OK, instalado en dispositivo + launch sin crash |
+| T6 | S6 | inline | ✅ hecho | commit `1b48645`: RED: `normalize()` devolvía `http://127.0.0.1/3001/` sin chistar (fallo puerto 80 en campo) → GREEN: `NetCheckTest` 6/6 (`testDebugUnitTest`), `assembleDebug` OK, instalado en dispositivo + launch sin crash |
 
 ## Log
 
