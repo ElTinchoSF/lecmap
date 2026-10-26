@@ -30,11 +30,11 @@ Aceptación: documentado en el feature doc que la arquitectura (Supabase Postgre
 
 | ID | Specs | Ruta | Estado | Commit / evidencia |
 |----|-------|------|--------|--------------------|
-| T1 | S1 | inline | ✅ hecho | `backend/supabase/migrations/001_auth_multiuser.sql` — pendiente ejecutar en Supabase |
-| T2 | S2 | inline | ✅ hecho | commit `b74f920`: JWT middleware + userId en 19 rutas, SQLite→Postgres, RLS en migration |
-| T3 | S3 | inline | ✅ hecho | commit `4f779c4`: useAuth hook, LoginScreen, Google OAuth, auto-attach JWT |
+| T1 | S1 | inline | ✅ hecho | Migration corrida en Supabase Dashboard ("Lecmap query"): profiles, recordings.user_id, segments, RLS ✅ |
+| T2 | S2 | inline | ✅ hecho | commits `b74f920` + `142fec2`: JWT ES256 via JWKS (no HS256), userId en todas las queries, SQLite→Postgres, 401 sin token, 200 con JWT válido |
+| T3 | S3 | inline | ✅ hecho | commit `4f779c4`: useAuth hook, LoginScreen, Google OAuth, auto-attach JWT, web/.env.local configurado |
 | T4 | S4 | inline | ✅ hecho | commit `2489d05`: SupabaseAuth REST client, LoginScreen, auth gate, token persistence |
-| T5 | S5 | inline | ✅ hecho | Documentado en header del feature doc: Supabase free tier cubre 50k, backend stateless escala horizontal, summaryJobs in-memory es deuda conocida |
+| T5 | S5 | inline | ✅ hecho | Escalabilidad documentada en Log L4 |
 
 ## Log
 
@@ -45,3 +45,5 @@ L2 (2026-10-26, usuario, verbatim): "1. Es la máquina de mi trabajo, pero lo qu
 L3 (2026-10-26, usuario, verbatim): "implementemos esto primero y tené en cuenta que necesito que mi cuenta sea de administrador para mas adelante poder armar un panel estadístico. Por otro lado, si en un futuro se tienen más de 50k usuarios, podemos escalar el proyecto? hay que tenerlo en cuenta nada más"
 
 L4 (2026-10-26, escalabilidad): Supabase free tier cubre 50k MAU. Para escalar más: upgrade Supabase Pro ($25/mes, 100k MAU) o migrar a Postgres managed (Neon, Railway). El backend es stateless (JWT validation, sin sesión en memoria) → escala horizontal con múltiples instancias. Deuda conocida: `summaryJobs` es un Set in-memory, perdido en crash; migrar a tabla en DB o Redis cuando sea necesario.
+
+L5 (2026-10-26, implementación completa): T1–T5 ✅. Hallazgos: (1) Supabase free tier firma JWTs con ES256, no HS256 → verificar vía JWKS con `jose`; (2) conexión directa a Postgres es IPv6-only, usar Session pooler (`aws-1-us-west-2.pooler.supabase.com:5432`); (3) DNS local no resuelve pooler → fallback a 8.8.8.8/1.1.1.1; (4) cuenta admin creada: `galantimartin@gmail.com` con `is_admin=true`. Verificado: 401 sin token, 200 con JWT válido, recording creado con user_id correcto, RLS activo.
