@@ -1225,10 +1225,6 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const toggleSettings = () => {
-    setShowSettings((v) => !v);
-  };
-
   // Auth gate: si Supabase está configurado y no hay sesión, mostrar login.
   if (supabase && !auth.loading && !auth.session) {
     return <LoginScreen auth={auth} />;
