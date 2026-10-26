@@ -4,7 +4,9 @@ Base pública: `https://api.lecmap.app` (local: `http://localhost:3001`, Android
 
 ## Autenticación
 
-Si el backend define `API_TOKEN`, todas las rutas exigen `Authorization: Bearer <token>` (o `X-API-Token`) **excepto** `GET /health` y `GET /files/:name`. Sin token o con uno inválido responde **401** `{ error: "Token de API inválido o ausente" }`. Si `API_TOKEN` está vacío, la API queda abierta (modo desarrollo). La web guarda el token en `localStorage` y Android en `SharedPreferences` (`notas_ia` → `api_token`).
+Autenticación con Supabase. El cliente se autentica vía Supabase Auth (email+password o Google OAuth) y obtiene un JWT. Todas las rutas **excepto** `GET /health` y `GET /files/:name` exigen `Authorization: Bearer <supabase_jwt>`. Sin token o con uno inválido/expirado responde **401**. Si `SUPABASE_JWT_SECRET` está vacío en el backend, la API queda abierta (modo desarrollo local).
+
+Cada usuario solo ve y edita sus propias grabaciones (aislamiento por `user_id` en el backend y Row Level Security en Supabase).
 
 ## Modelos
 

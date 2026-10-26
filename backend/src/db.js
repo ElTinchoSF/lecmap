@@ -1,40 +1,13 @@
-import { DatabaseSync } from 'node:sqlite';
-import path from 'path';
-import { mkdirSync } from 'fs';
+import pg from 'pg';
 
-const DATA_DIR = path.resolve('data');
-mkdirSync(DATA_DIR, { recursive: true });
+const { Pool } = pg;
 
-const db = new DatabaseSync(path.join(DATA_DIR, 'notas.db'));
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+});
 
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-
-  CREATE TABLE IF NOT EXISTS recordings (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'queued',
-    error TEXT,
-    audio_path TEXT,
-    youtube_url TEXT,
-    summary TEXT,
-    mindmap TEXT,
-    created_at TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS segments (
-    recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
-    idx INTEGER NOT NULL,
-    start REAL NOT NULL,
-    end REAL NOT NULL,
-    speaker TEXT NOT NULL,
-    text TEXT NOT NULL,
-    PRIMARY KEY (recording_id, idx)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_recordings_created ON recordings(created_at DESC);
-`);
+// ---------- recordings ----------
 
 const toRecording = (row, segments = []) => row && ({
   id: row.id,
@@ -44,102 +17,150 @@ const toRecording = (row, segments = []) => row && ({
   audioPath: row.audio_path || null,
   youtubeUrl: row.youtube_url || null,
   summary: row.summary || null,
-  mindmap: row.mindmap ? JSON.parse(row.mindmap) : null,
+  mindmap: row.mindmap ?? null,
   transcript: segments.map((s) => ({ start: s.start, end: s.end, speaker: s.speaker, text: s.text })),
   createdAt: row.created_at,
 });
 
-const q = {
-  insertRecording: db.prepare(`INSERT INTO recordings (id, title, status, audio_path, youtube_url, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
-  getRecording: db.prepare(`SELECT * FROM recordings WHERE id = ?`),
-  listRecordings: db.prepare(`SELECT * FROM recordings ORDER BY created_at DESC LIMIT ? OFFSET ?`),
-  listByKeyword: db.prepare(`
-    SELECT DISTINCT r.* FROM recordings r
-    LEFT JOIN segments s ON s.recording_id = r.id
-    WHERE lower(r.title) LIKE ? OR lower(s.text) LIKE ?
-    ORDER BY r.created_at DESC
-    LIMIT ? OFFSET ?
-  `),
-  countRecordings: db.prepare(`SELECT COUNT(*) AS n FROM recordings`),
-  countByKeyword: db.prepare(`
-    SELECT COUNT(DISTINCT r.id) AS n FROM recordings r
-    LEFT JOIN segments s ON s.recording_id = r.id
-    WHERE lower(r.title) LIKE ? OR lower(s.text) LIKE ?
-  `),
-  deleteRecording: db.prepare(`DELETE FROM recordings WHERE id = ?`),
-  setStatus: db.prepare(`UPDATE recordings SET status = ?, error = ? WHERE id = ?`),
-  setTranscriptMeta: db.prepare(`UPDATE recordings SET status = 'ready', error = NULL WHERE id = ?`),
-  setSummary: db.prepare(`UPDATE recordings SET summary = ?, mindmap = ?, status = 'ready', error = NULL WHERE id = ?`),
-  resetInterrupted: db.prepare(`UPDATE recordings SET status = 'error', error = 'El análisis se interrumpió (el servidor se reinició). Volvé a intentarlo.' WHERE status IN ('transcribing', 'summarizing')`),
-  setAudioPath: db.prepare(`UPDATE recordings SET audio_path = ? WHERE id = ?`),
-  listAudioPaths: db.prepare(`SELECT audio_path FROM recordings WHERE audio_path IS NOT NULL`),
-  insertSegment: db.prepare(`INSERT INTO segments (recording_id, idx, start, end, speaker, text) VALUES (?, ?, ?, ?, ?, ?)`),
-  clearSegments: db.prepare(`DELETE FROM segments WHERE recording_id = ?`),
-  getSegments: db.prepare(`SELECT * FROM segments WHERE recording_id = ? ORDER BY idx`),
-};
-
-export function createRecording({ id, title, audioPath = null, youtubeUrl = null, createdAt }) {
-  q.insertRecording.run(id, title, 'queued', audioPath, youtubeUrl, createdAt);
-  return getRecording(id);
+export async function createRecording({ id, userId, title, audioPath = null, youtubeUrl = null, createdAt }) {
+  await pool.query(
+    `INSERT INTO recordings (id, user_id, title, status, audio_path, youtube_url, created_at)
+     VALUES ($1, $2, $3, 'queued', $4, $5, $6)`,
+    [id, userId, title, audioPath, youtubeUrl, createdAt],
+  );
+  return getRecording(id, userId);
 }
 
-export function getRecording(id) {
-  const row = q.getRecording.get(id);
-  if (!row) return null;
-  return toRecording(row, q.getSegments.all(id));
+export async function getRecording(id, userId) {
+  const { rows } = await pool.query(
+    'SELECT * FROM recordings WHERE id = $1 AND user_id = $2',
+    [id, userId],
+  );
+  if (!rows[0]) return null;
+  const segs = await pool.query(
+    'SELECT * FROM segments WHERE recording_id = $1 ORDER BY idx',
+    [id],
+  );
+  return toRecording(rows[0], segs.rows);
 }
 
-export function listRecordings(keyword = '', { limit = 50, offset = 0 } = {}) {
+export async function listRecordings(userId, keyword = '', { limit = 50, offset = 0 } = {}) {
   const kw = keyword.trim().toLowerCase();
-  const hasKw = kw.length > 0;
-  const rows = hasKw
-    ? q.listByKeyword.all(`%${kw}%`, `%${kw}%`, limit, offset)
-    : q.listRecordings.all(limit, offset);
-  const total = hasKw
-    ? q.countByKeyword.get(`%${kw}%`, `%${kw}%`).n
-    : q.countRecordings.get().n;
-  const items = rows.map((row) => toRecording(row, q.getSegments.all(row.id)));
+  let rows, total;
+  if (kw) {
+    const r = await pool.query(
+      `SELECT DISTINCT r.* FROM recordings r
+       LEFT JOIN segments s ON s.recording_id = r.id
+       WHERE r.user_id = $1 AND (lower(r.title) LIKE $2 OR lower(s.text) LIKE $2)
+       ORDER BY r.created_at DESC
+       LIMIT $3 OFFSET $4`,
+      [userId, `%${kw}%`, limit, offset],
+    );
+    rows = r.rows;
+    const c = await pool.query(
+      `SELECT COUNT(DISTINCT r.id) AS n FROM recordings r
+       LEFT JOIN segments s ON s.recording_id = r.id
+       WHERE r.user_id = $1 AND (lower(r.title) LIKE $2 OR lower(s.text) LIKE $2)`,
+      [userId, `%${kw}%`],
+    );
+    total = Number(c.rows[0].n);
+  } else {
+    const r = await pool.query(
+      'SELECT * FROM recordings WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3',
+      [userId, limit, offset],
+    );
+    rows = r.rows;
+    const c = await pool.query(
+      'SELECT COUNT(*) AS n FROM recordings WHERE user_id = $1',
+      [userId],
+    );
+    total = Number(c.rows[0].n);
+  }
+  // Cargar segments en batch (evita N+1)
+  const ids = rows.map((r) => r.id);
+  let segMap = new Map();
+  if (ids.length) {
+    const s = await pool.query(
+      'SELECT * FROM segments WHERE recording_id = ANY($1) ORDER BY recording_id, idx',
+      [ids],
+    );
+    for (const seg of s.rows) {
+      if (!segMap.has(seg.recording_id)) segMap.set(seg.recording_id, []);
+      segMap.get(seg.recording_id).push(seg);
+    }
+  }
+  const items = rows.map((row) => toRecording(row, segMap.get(row.id) || []));
   return { items, total, limit, offset };
 }
 
-export function setStatus(id, status, error = null) {
-  q.setStatus.run(status, error, id);
-  return getRecording(id);
+export async function setStatus(id, userId, status, error = null) {
+  await pool.query(
+    'UPDATE recordings SET status = $1, error = $2 WHERE id = $3 AND user_id = $4',
+    [status, error, id, userId],
+  );
+  return getRecording(id, userId);
 }
 
-export function saveTranscript(id, segments) {
-  db.exec('BEGIN');
+export async function saveTranscript(id, userId, segments) {
+  const client = await pool.connect();
   try {
-    q.clearSegments.run(id);
-    segments.forEach((s, i) => q.insertSegment.run(id, i, s.start, s.end, s.speaker, s.text));
-    q.setTranscriptMeta.run(id);
-    db.exec('COMMIT');
+    await client.query('BEGIN');
+    await client.query('DELETE FROM segments WHERE recording_id = $1', [id]);
+    for (let i = 0; i < segments.length; i++) {
+      const s = segments[i];
+      await client.query(
+        'INSERT INTO segments (recording_id, idx, start, end, speaker, text) VALUES ($1,$2,$3,$4,$5,$6)',
+        [id, i, s.start, s.end, s.speaker, s.text],
+      );
+    }
+    await client.query(
+      `UPDATE recordings SET status = 'ready', error = NULL WHERE id = $1 AND user_id = $2`,
+      [id, userId],
+    );
+    await client.query('COMMIT');
   } catch (e) {
-    db.exec('ROLLBACK');
+    await client.query('ROLLBACK');
     throw e;
+  } finally {
+    client.release();
   }
-  return getRecording(id);
+  return getRecording(id, userId);
 }
 
-export function saveSummary(id, summary, mindmap) {
-  q.setSummary.run(summary, JSON.stringify(mindmap ?? null), id);
-  return getRecording(id);
+export async function saveSummary(id, userId, summary, mindmap) {
+  await pool.query(
+    `UPDATE recordings SET summary = $1, mindmap = $2, status = 'ready', error = NULL
+     WHERE id = $3 AND user_id = $4`,
+    [summary, JSON.stringify(mindmap ?? null), id, userId],
+  );
+  return getRecording(id, userId);
+}
+
+export async function setAudioPath(id, userId, audioPath) {
+  await pool.query(
+    'UPDATE recordings SET audio_path = $1 WHERE id = $2 AND user_id = $3',
+    [audioPath, id, userId],
+  );
+  return getRecording(id, userId);
+}
+
+export async function listAudioPaths(userId) {
+  const { rows } = await pool.query(
+    'SELECT audio_path FROM recordings WHERE user_id = $1 AND audio_path IS NOT NULL',
+    [userId],
+  );
+  return rows.map((r) => r.audio_path).filter(Boolean);
+}
+
+export async function deleteRecording(id, userId) {
+  await pool.query('DELETE FROM recordings WHERE id = $1 AND user_id = $2', [id, userId]);
 }
 
 /** Al arrancar, las notas que quedaron a mitad de análisis pasan a error. */
-export function resetInterrupted() {
-  q.resetInterrupted.run();
-}
-
-export function setAudioPath(id, audioPath) {
-  q.setAudioPath.run(audioPath, id);
-  return getRecording(id);
-}
-
-export function listAudioPaths() {
-  return q.listAudioPaths.all().map((row) => row.audio_path).filter(Boolean);
-}
-
-export function deleteRecording(id) {
-  q.deleteRecording.run(id);
+export async function resetInterrupted() {
+  await pool.query(
+    `UPDATE recordings SET status = 'error',
+     error = 'El análisis se interrumpió (el servidor se reinició). Volvé a intentarlo.'
+     WHERE status IN ('transcribing', 'summarizing')`,
+  );
 }

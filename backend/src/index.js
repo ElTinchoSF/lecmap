@@ -4,7 +4,7 @@ import multipart from '@fastify/multipart';
 import { readFile, writeFile, unlink, readdir, stat } from 'fs/promises';
 import { createReadStream } from 'fs';
 import { mkdirSync } from 'fs';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import jwt from 'jsonwebtoken';
 import path from 'path';
 import 'dotenv/config';
 import {
@@ -38,35 +38,40 @@ await app.register(cors, {
     cb(null, false);
   },
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Token'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
 });
 await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } });
 
-// Token opcional para proteger la API cuando está expuesta por el túnel.
-// Si API_TOKEN está vacío, la API queda abierta (comportamiento anterior).
-const API_TOKEN = (process.env.API_TOKEN || '').trim();
-const API_TOKEN_HASH = API_TOKEN ? createHash('sha256').update(API_TOKEN).digest() : null;
-
-function tokenMatches(candidate) {
-  if (!API_TOKEN_HASH || !candidate) return false;
-  const hash = createHash('sha256').update(String(candidate)).digest();
-  return timingSafeEqual(hash, API_TOKEN_HASH);
-}
+// Auth con Supabase: validamos el JWT firmado por Supabase.
+// SUPABASE_JWT_SECRET viene de Supabase → Settings → API → JWT Secret.
+const SUPABASE_JWT_SECRET = (process.env.SUPABASE_JWT_SECRET || '').trim();
 
 app.addHook('onRequest', async (req, reply) => {
-  if (!API_TOKEN_HASH || req.method === 'OPTIONS') return;
   const pathname = (req.url || '').split('?')[0];
-  // /health y /files quedan públicos: el reproductor web/Android pide el
-  // audio con una URL directa y no puede mandar cabeceras personalizadas.
+  // /health y /files quedan públicos.
   if (pathname === '/health' || pathname.startsWith('/files/')) return;
+  if (req.method === 'OPTIONS') return;
+
+  // Sin configurado → modo dev abierto (sin auth).
+  if (!SUPABASE_JWT_SECRET) {
+    req.userId = 'dev-user';
+    return;
+  }
 
   const auth = req.headers.authorization || '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
-  const alt = req.headers['x-api-token'];
-  if (tokenMatches(bearer) || tokenMatches(typeof alt === 'string' ? alt : '')) return;
+  if (!bearer) {
+    reply.header('WWW-Authenticate', 'Bearer');
+    return reply.code(401).send({ error: 'Token de autenticación ausente' });
+  }
 
-  reply.header('WWW-Authenticate', 'Bearer');
-  return reply.code(401).send({ error: 'Token de API inválido o ausente' });
+  try {
+    const payload = jwt.verify(bearer, SUPABASE_JWT_SECRET, { algorithms: ['HS256'] });
+    req.userId = payload.sub; // UUID del usuario en Supabase
+  } catch {
+    reply.header('WWW-Authenticate', 'Bearer');
+    return reply.code(401).send({ error: 'Token de autenticación inválido o expirado' });
+  }
 });
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
@@ -482,7 +487,7 @@ app.get('/health', async () => ({
   openai: !!OPENAI_KEY,
   stt: STT_MODEL,
   chat: CHAT_MODEL,
-  auth: !!API_TOKEN_HASH,
+  auth: SUPABASE_JWT_SECRET ? 'supabase' : 'none',
 }));
 
 app.post('/recordings', async (req) => {
@@ -508,13 +513,13 @@ app.post('/recordings', async (req) => {
     if (b.youtubeUrl) youtubeUrl = String(b.youtubeUrl);
   }
 
-  return createRecording({ id: id(), title, audioPath, youtubeUrl, createdAt: now() });
+  return createRecording({ id: id(), userId: req.userId, title, audioPath, youtubeUrl, createdAt: now() });
 });
 
 // Vuelve a subir el audio de una nota existente (por ejemplo, para reanalizarla
 // después de que el servidor borró su copia tras transcribir).
 app.post('/recordings/:id/audio', async (req, reply) => {
-  const r = getRecording(req.params.id);
+  const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   if (!req.isMultipart()) return reply.code(400).send({ error: 'se esperaba multipart/form-data' });
 
@@ -532,28 +537,28 @@ app.post('/recordings/:id/audio', async (req, reply) => {
   const fp = path.join(uploadsDir, `${id()}_${safeName}`);
   await writeFile(fp, buf);
   if (r.audioPath) await removeAudioFile(r.audioPath, req.log);
-  setAudioPath(r.id, fp);
-  return getRecording(r.id);
+  await setAudioPath(r.id, req.userId, fp);
+  return getRecording(r.id, req.userId);
 });
 
 app.get('/recordings', async (req) => {
   const limit = Math.min(Math.max(parseInt(req.query?.limit, 10) || 50, 1), 200);
   const offset = Math.max(parseInt(req.query?.offset, 10) || 0, 0);
-  return listRecordings(req.query?.q || '', { limit, offset });
+  return listRecordings(req.userId, req.query?.q || '', { limit, offset });
 });
 
 app.get('/recordings/:id', async (req, reply) => {
-  const r = getRecording(req.params.id);
+  const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   return r;
 });
 
 app.delete('/recordings/:id', async (req, reply) => {
-  const r = getRecording(req.params.id);
+  const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   // Primero la fila (la nota desaparece ya) y después el archivo. Si el
   // archivo está bloqueado, el cleanup lo borra más tarde.
-  deleteRecording(req.params.id);
+  await deleteRecording(req.params.id, req.userId);
   await removeAudioFile(r.audioPath, req.log);
   return { ok: true };
 });
@@ -575,12 +580,12 @@ app.get('/files/:name', async (req, reply) => {
 });
 
 app.post('/recordings/:id/transcribe', async (req, reply) => {
-  const r = getRecording(req.params.id);
+  const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   if (!OPENAI_KEY) return reply.code(500).send({ error: 'OPENAI_API_KEY no configurada' });
   if (!r.audioPath) return reply.code(400).send({ error: 'sin audio subido' });
 
-  setStatus(r.id, 'transcribing');
+  await setStatus(r.id, req.userId, 'transcribing');
   try {
     const result = await openaiTranscribe(r.audioPath);
     const segments = (result.segments || []).map((s, i) => ({
@@ -589,15 +594,15 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
       speaker: `SPEAKER_${String(i % 2).padStart(2, '0')}`,
       text: s.text.trim(),
     }));
-    const saved = saveTranscript(r.id, segments);
-    // La transcripción ya está en SQLite: el servidor no necesita conservar el
+    const saved = await saveTranscript(r.id, req.userId, segments);
+    // La transcripción ya está en la base: el servidor no necesita conservar el
     // audio. El cliente mantiene su copia local para reproducir la clase.
     await removeAudioFile(r.audioPath, req.log);
-    setAudioPath(r.id, null);
+    await setAudioPath(r.id, req.userId, null);
     return { ...saved, audioPath: null };
   } catch (e) {
     console.error('[transcribe] error:', e.message);
-    setStatus(r.id, 'error', e.message);
+    await setStatus(r.id, req.userId, 'error', e.message);
     // Error real = status 5xx (nunca 200): los clientes chequean r.ok y hoy el
     // fallo pasaba silencioso. El estado de la nota ya quedó en 'error'.
     return reply
@@ -714,9 +719,9 @@ function mindmapSystemPrompt(template) {
     + 'El summary debe ser un resumen de estudio de 3 a 6 frases.';
 }
 
-async function runSummaryJob(id, template) {
+async function runSummaryJob(id, userId, template) {
   try {
-    const r = getRecording(id);
+    const r = await getRecording(id, userId);
     if (!r) return;
     const chunks = transcriptChunks(r.transcript);
     if (chunks.length === 0) throw new Error('La grabación no tiene transcripción');
@@ -753,18 +758,18 @@ async function runSummaryJob(id, template) {
     const parsed = parseJsonLoose(raw);
     const mindmap = normalizeMindmap(parsed.mindmap);
     if (!mindmap) throw new Error('La IA no devolvió un mapa de ideas válido');
-    saveSummary(id, parsed.summary, mindmap);
+    await saveSummary(id, userId, parsed.summary, mindmap);
     console.log(`[summarize] ${id} listo (${chunks.length} bloque/s)`);
   } catch (e) {
     console.error(`[summarize] ${id} error:`, e.message);
-    setStatus(id, 'error', `No se pudo resumir: ${e.message}`);
+    await setStatus(id, userId, 'error', `No se pudo resumir: ${e.message}`);
   } finally {
     summaryJobs.delete(id);
   }
 }
 
 app.post('/recordings/:id/summarize', async (req, reply) => {
-  const r = getRecording(req.params.id);
+  const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   if (!OPENAI_KEY) return reply.code(500).send({ error: 'OPENAI_API_KEY no configurada' });
   if (!r.transcript.length) return reply.code(400).send({ error: 'La grabación no tiene transcripción' });
@@ -772,10 +777,10 @@ app.post('/recordings/:id/summarize', async (req, reply) => {
   const template = req.body?.template || 'general';
   if (!summaryJobs.has(r.id)) {
     summaryJobs.add(r.id);
-    setStatus(r.id, 'summarizing', null);
+    await setStatus(r.id, req.userId, 'summarizing', null);
     // No se espera: una clase larga puede tardar varios minutos y Cloudflare
     // corta respuestas de más de ~100 s. El cliente consulta el estado.
-    runSummaryJob(r.id, template);
+    runSummaryJob(r.id, req.userId, template);
   }
   return reply.code(202).send({ id: r.id, status: 'summarizing' });
 });
@@ -833,7 +838,7 @@ function relevantTranscript(segments, question, maxChars = 12_000) {
 }
 
 app.post('/recordings/:id/ask', async (req, reply) => {
-  const r = getRecording(req.params.id);
+  const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   if (!OPENAI_KEY) return reply.code(500).send({ error: 'OPENAI_API_KEY no configurada' });
 
