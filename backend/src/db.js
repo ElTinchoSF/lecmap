@@ -52,12 +52,19 @@ const toRecording = (row, segments = []) => row && ({
 const q = {
   insertRecording: db.prepare(`INSERT INTO recordings (id, title, status, audio_path, youtube_url, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
   getRecording: db.prepare(`SELECT * FROM recordings WHERE id = ?`),
-  listRecordings: db.prepare(`SELECT * FROM recordings ORDER BY created_at DESC`),
+  listRecordings: db.prepare(`SELECT * FROM recordings ORDER BY created_at DESC LIMIT ? OFFSET ?`),
   listByKeyword: db.prepare(`
     SELECT DISTINCT r.* FROM recordings r
     LEFT JOIN segments s ON s.recording_id = r.id
     WHERE lower(r.title) LIKE ? OR lower(s.text) LIKE ?
     ORDER BY r.created_at DESC
+    LIMIT ? OFFSET ?
+  `),
+  countRecordings: db.prepare(`SELECT COUNT(*) AS n FROM recordings`),
+  countByKeyword: db.prepare(`
+    SELECT COUNT(DISTINCT r.id) AS n FROM recordings r
+    LEFT JOIN segments s ON s.recording_id = r.id
+    WHERE lower(r.title) LIKE ? OR lower(s.text) LIKE ?
   `),
   deleteRecording: db.prepare(`DELETE FROM recordings WHERE id = ?`),
   setStatus: db.prepare(`UPDATE recordings SET status = ?, error = ? WHERE id = ?`),
@@ -82,10 +89,17 @@ export function getRecording(id) {
   return toRecording(row, q.getSegments.all(id));
 }
 
-export function listRecordings(keyword = '') {
+export function listRecordings(keyword = '', { limit = 50, offset = 0 } = {}) {
   const kw = keyword.trim().toLowerCase();
-  const rows = kw ? q.listByKeyword.all(`%${kw}%`, `%${kw}%`) : q.listRecordings.all();
-  return rows.map((row) => toRecording(row, q.getSegments.all(row.id)));
+  const hasKw = kw.length > 0;
+  const rows = hasKw
+    ? q.listByKeyword.all(`%${kw}%`, `%${kw}%`, limit, offset)
+    : q.listRecordings.all(limit, offset);
+  const total = hasKw
+    ? q.countByKeyword.get(`%${kw}%`, `%${kw}%`).n
+    : q.countRecordings.get().n;
+  const items = rows.map((row) => toRecording(row, q.getSegments.all(row.id)));
+  return { items, total, limit, offset };
 }
 
 export function setStatus(id, status, error = null) {

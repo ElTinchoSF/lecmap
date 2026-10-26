@@ -41,13 +41,24 @@ data class RecordingDto(
   val hasLocalAudio: Boolean = false,
 )
 
+data class RecordingListDto(
+  val items: List<RecordingDto> = emptyList(),
+  val total: Int = 0,
+  val limit: Int = 50,
+  val offset: Int = 0,
+)
+
 data class AskReq(val question: String)
 data class AskRes(val answer: String? = null)
 data class SummarizeReq(val template: String = "class")
 
 interface Api {
   @GET("recordings")
-  suspend fun list(@Query("q") q: String = ""): List<RecordingDto>
+  suspend fun list(
+    @Query("q") q: String = "",
+    @Query("limit") limit: Int = 50,
+    @Query("offset") offset: Int = 0,
+  ): RecordingListDto
 
   @GET("recordings/{id}")
   suspend fun get(@Path("id") id: String): RecordingDto

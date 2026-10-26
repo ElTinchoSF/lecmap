@@ -84,7 +84,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       // .m4a huérfanos (proceso muerto a mitad de grabación) vuelven como notas.
       withContext(Dispatchers.IO) { store.recoverOrphans() }
       try {
-        val server = withContext(Dispatchers.IO) { api.list(query) }
+        val server = withContext(Dispatchers.IO) { api.list(query).items }
         withContext(Dispatchers.IO) {
           for (dto in server) dto.id?.let { store.updateFromServer(it, dto) }
         }
