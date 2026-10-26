@@ -51,8 +51,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
   private val api get() = Net.api(serverUrl)
 
-  fun updateServerUrl(url: String, token: String = apiToken) {
-    val normalized = Net.normalize(url)
+  /**
+   * Guarda la URL y el token. Devuelve null si quedó guardado, o el motivo
+   * del rechazo si la URL no es válida (en ese caso no se persiste nada).
+   */
+  fun updateServerUrl(url: String, token: String = apiToken): String? {
+    val normalized = when (val checked = Net.check(url)) {
+      is ServerUrl.Valid -> checked.url
+      is ServerUrl.Invalid -> return checked.reason
+    }
     serverUrl = normalized
     apiToken = token.trim()
     Net.apiToken = apiToken
@@ -63,6 +70,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     error = null
     selected = null
     refresh()
+    return null
   }
 
   fun search() = refresh()

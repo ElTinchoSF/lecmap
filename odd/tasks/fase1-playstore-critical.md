@@ -36,10 +36,10 @@ Aceptación: `Net.normalize`/`updateServerUrl` rechazan (a) cualquier string que
 |----|-------|------|--------|--------------------|
 | T1 | S1 | inline | ✅ hecho | evidencia: `npm ls dotv` vacío, lock 0 ocurrencias, `dotenv` import OK |
 | T2 | S2 | inline | ✅ hecho | RED: HTTP 200+status:error reproducido → GREEN: 500+body JSON (local), 404 preservado, éxito 200 con transcript real (audio `say`) |
-| T3 | S3 | inline | pendiente | — |
-| T4 | S4 | inline | pendiente | — |
-| T5 | S5 | inline | pendiente | — |
-| T6 | S6 | inline | pendiente | — |
+| T3 | S3 | inline | ✅ hecho | GREEN: server colgante + STT_TIMEOUT_MS=2000 → HTTP 502 en 2.02s (`timeout tras 2000 ms`); regresión real Groq 200/ready; documentado en README + .env.example |
+| T4 | S4 | inline | ✅ hecho | RED en código (`output?.delete()`, git show HEAD~1); GREEN en dispositivo: force-stop a mitad de grabación → archivo intacto (30 KB) + nota `Nota 26/10 08:26` recuperada por recoverOrphans y visible en UI |
+| T5 | S5 | inline | ✅ hecho | commit `e46c4a1`: `strict:true`, 0 `any`, `tsc -b` + `vite build` OK, probe diferencial old-vs-new idéntico en 20 fixtures |
+| T6 | S6 | inline | ✅ hecho | commit `a0d4bf4`: RED: `normalize()` devolvía `http://127.0.0.1/3001/` sin chistar (fallo puerto 80 en campo) → GREEN: `NetCheckTest` 6/6 (`testDebugUnitTest`), `assembleDebug` OK, instalado en dispositivo + launch sin crash |
 
 ## Log
 
@@ -48,3 +48,5 @@ L1 (2026-10-25, usuario, verbatim): "si, arranca" — confirmando la propuesta: 
 L1-contexto (2026-10-25, usuario, verbatim): "Contesto tu pregunta y luego agrego otras cosas más: 1. La idea apunta a publicar en Play Store con usuarios reales".
 
 Contexto de análisis (2026-10-25): objetivo Play Store con usuarios reales confirmado; roadmap aprobado en 3 fases (1 = quick wins, 2 = infra/eficiencia, 3 = transcripción en vivo). Depuración Android por USB operativa en la Mac (toolchain instalado, `adb reverse tcp:3001 tcp:3001`, backend local en :3001); el flujo grabar → analizar → resumen funcionó end-to-end en el celular. Bug hallado y corregido en el camino: `server_url` se guardó como `http://127.0.0.1/3001/` (sin validar) → origen del S6.
+
+L2 (2026-10-26, cierre Fase 1): T5 estaba implementado (commit `e46c4a1`) pero el doc lo marcaba pendiente → sincronizado. T6 implementado sobre el working tree heredado + `NetCheckTest` nuevo (infra `testImplementation junit` agregada a `app/build.gradle`): 6/6 GREEN, APK instalado en dispositivo (`130303752L001050`) y launch sin crash. SDK hallado en `/opt/homebrew/share/android-commandlinetools` (exportar `ANDROID_HOME` + JDK 17 para compilar). Fase 1 completa: T1–T6 ✅. Queda como verificación manual en el celular: abrir el diálogo de servidor, pegar `http://127.0.0.1/3001/` y confirmar el mensaje "Falta el puerto". `Risk: none` (T6: validación nueva sin cambiar el caso válido; `normalize` conserva fallback a default).

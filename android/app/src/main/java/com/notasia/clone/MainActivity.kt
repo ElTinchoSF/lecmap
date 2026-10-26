@@ -250,6 +250,7 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
   if (showServer) {
     var draft by remember { mutableStateOf(vm.serverUrl) }
     var tokenDraft by remember { mutableStateOf(vm.apiToken) }
+    var urlError by remember { mutableStateOf<String?>(null) }
     AlertDialog(
       onDismissRequest = { showServer = false },
       containerColor = Surface1,
@@ -265,10 +266,17 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
           Spacer(Modifier.height(10.dp))
           OutlinedTextField(
             value = draft,
-            onValueChange = { draft = it },
+            onValueChange = {
+              draft = it
+              urlError = null
+            },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             label = { Text("URL") },
+            isError = urlError != null,
+            supportingText = {
+              if (urlError != null) Text(urlError!!, color = Danger, fontSize = 11.sp)
+            },
             colors = fieldColors(),
           )
           Spacer(Modifier.height(10.dp))
@@ -294,8 +302,8 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
       },
       confirmButton = {
         TextButton(onClick = {
-          vm.updateServerUrl(draft, tokenDraft)
-          showServer = false
+          val err = vm.updateServerUrl(draft, tokenDraft)
+          if (err == null) showServer = false else urlError = err
         }) { Text("Guardar") }
       },
       dismissButton = {
@@ -384,6 +392,9 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
   focusedTextColor = TextPrimary,
   unfocusedTextColor = TextPrimary,
   cursorColor = Accent,
+  errorBorderColor = Danger,
+  errorLabelColor = Danger,
+  errorSupportingTextColor = Danger,
 )
 
 @Composable

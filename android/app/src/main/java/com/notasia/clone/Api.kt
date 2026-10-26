@@ -1,6 +1,7 @@
 package com.notasia.clone
 
 import com.google.gson.annotations.SerializedName
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
 import okhttp3.MultipartBody
@@ -78,6 +79,12 @@ interface Api {
   suspend fun delete(@Path("id") id: String): Response<Unit>
 }
 
+/** Resultado de validar la URL del backend. */
+sealed interface ServerUrl {
+  data class Valid(val url: String) : ServerUrl
+  data class Invalid(val reason: String) : ServerUrl
+}
+
 object Net {
   const val DEFAULT_BASE_URL = "http://10.0.2.2:3001/"
 
@@ -101,14 +108,39 @@ object Net {
     .writeTimeout(180, TimeUnit.SECONDS)
     .build()
 
-  /** Acepta "192.168.0.10:3001", "http://..." o una URL completa. */
-  fun normalize(url: String): String {
+  /**
+   * Valida y normaliza la URL del servidor.
+   * Acepta "192.168.0.10:3001", "http://..." o una URL completa.
+   * Rechaza lo que no parsea como http(s) y el typo clásico de puerto:
+   * "http://127.0.0.1/3001/" (barra en vez de dos puntos).
+   */
+  fun check(url: String): ServerUrl {
     val trimmed = url.trim()
-    if (trimmed.isEmpty()) return DEFAULT_BASE_URL
+    if (trimmed.isEmpty()) return ServerUrl.Valid(DEFAULT_BASE_URL)
     val withScheme =
-      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) trimmed
+      if (trimmed.startsWith("http://", true) || trimmed.startsWith("https://", true)) trimmed
       else "http://$trimmed"
-    return if (withScheme.endsWith("/")) withScheme else "$withScheme/"
+    val parsed = withScheme.toHttpUrlOrNull()
+      ?: return ServerUrl.Invalid("URL inválida. Usá http:// o https://, por ejemplo http://192.168.0.10:3001/")
+
+    // Sin puerto explícito y con un primer segmento de path numérico: casi seguro
+    // es el typo "/" en lugar de ":" (http://127.0.0.1/3001/ en vez de :3001/).
+    val authority = withScheme.substringAfter("://", "").substringBefore('/')
+    val hostAndPort = authority.substringAfterLast('@')
+    val firstSegment = parsed.pathSegments.firstOrNull()
+    if (!hostAndPort.contains(':') && firstSegment?.toIntOrNull() != null) {
+      return ServerUrl.Invalid(
+        "Falta el puerto (:). ¿Quisiste http://${parsed.host}:$firstSegment/?",
+      )
+    }
+
+    return ServerUrl.Valid(if (withScheme.endsWith("/")) withScheme else "$withScheme/")
+  }
+
+  /** Normaliza para uso interno; una URL inválida cae en la por defecto. */
+  fun normalize(url: String): String = when (val checked = check(url)) {
+    is ServerUrl.Valid -> checked.url
+    is ServerUrl.Invalid -> DEFAULT_BASE_URL
   }
 
   /** Reutiliza Retrofit mientras la URL no cambie. */
