@@ -113,7 +113,7 @@ export async function saveTranscript(id, userId, segments) {
     for (let i = 0; i < segments.length; i++) {
       const s = segments[i];
       await client.query(
-        'INSERT INTO segments (recording_id, idx, start, end, speaker, text) VALUES ($1,$2,$3,$4,$5,$6)',
+        'INSERT INTO segments (recording_id, idx, start, "end", speaker, text) VALUES ($1,$2,$3,$4,$5,$6)',
         [id, i, s.start, s.end, s.speaker, s.text],
       );
     }
