@@ -739,6 +739,7 @@ export default function App() {
   const [needsToken, setNeedsToken] = useState(false);
   const [exportTimes, setExportTimes] = useState(true);
   const [q, setQ] = useState('');
+  const [debouncedQ, setDebouncedQ] = useState('');
   const [sel, setSel] = useState<NoteView | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [question, setQuestion] = useState('');
@@ -753,11 +754,17 @@ export default function App() {
   const detailRef = useRef<HTMLDivElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
 
+  // Debounce de la búsqueda: evita un fetch por cada keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q), 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
   const load = useCallback(async () => {
     const localList = await listLocalNotes().catch(() => [] as LocalNote[]);
     setLocals(localList);
     try {
-      const r = await apiFetch(`/recordings?q=${encodeURIComponent(q)}`, {}, apiToken);
+      const r = await apiFetch(`/recordings?q=${encodeURIComponent(debouncedQ)}`, {}, apiToken);
       if (r.status === 401) {
         setNeedsToken(true);
         setServerNotes([]);
@@ -798,7 +805,7 @@ export default function App() {
       setServerNotes([]);
       setServerOk(false);
     }
-  }, [q, apiToken]);
+  }, [debouncedQ, apiToken]);
 
   useEffect(() => { load(); }, [load]);
 
