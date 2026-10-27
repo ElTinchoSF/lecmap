@@ -13,6 +13,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -54,8 +55,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -345,33 +348,55 @@ private fun Header(
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
       Column(Modifier.weight(1f)) {
         Text(
-          "Lecmap",
-          color = Accent,
-          fontSize = 24.sp,
-          fontWeight = FontWeight.Bold,
+          text = "Lecmap",
+          style = TextStyle(
+            brush = Brush.linearGradient(AccentGradient),
+            fontWeight = FontWeight.Bold,
+            fontSize = 28.sp,
+          ),
         )
         Text(
           "Tus clases, en un mapa",
           color = TextSecondary,
-          fontSize = 10.sp,
+          fontSize = 12.sp,
+          modifier = Modifier.padding(top = 2.dp),
         )
       }
+      // Mismo patrón que la web: Salir (secundario) a la izquierda de Grabar.
+      SecondaryButton(
+        text = "Salir",
+        onClick = onLogout,
+        enabled = !busy,
+        modifier = Modifier.padding(end = 8.dp),
+      )
       Button(
         onClick = onToggle,
         enabled = !busy,
+        shape = RoundedCornerShape(10.dp),
         colors = ButtonDefaults.buttonColors(
-          containerColor = if (recording) Danger else Accent,
-          contentColor = if (recording) Color.White else OnAccent,
+          containerColor = if (recording) Danger else Color.Transparent,
+          contentColor = if (recording) Color.Black else OnAccent,
+          disabledContainerColor = Color.Transparent,
         ),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        modifier = if (recording) {
+          Modifier
+        } else {
+          Modifier.background(Brush.linearGradient(AccentGradient), RoundedCornerShape(10.dp))
+        },
       ) {
-        Text(if (recording) "■  Detener" else "●  Grabar", fontWeight = FontWeight.Bold)
+        Text(
+          if (recording) "■  Detener" else "●  Grabar",
+          fontSize = 14.sp,
+          fontWeight = FontWeight.Bold,
+        )
       }
     }
-    Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
       Text(
         email.ifBlank { serverUrl },
         color = TextSecondary,
-        fontSize = 10.sp,
+        fontSize = 11.sp,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.weight(1f),
@@ -379,22 +404,9 @@ private fun Header(
       Text(
         "Cambiar servidor",
         color = Accent,
-        fontSize = 10.sp,
+        fontSize = 11.sp,
         fontWeight = FontWeight.Bold,
         modifier = Modifier.clickable(onClick = onServer).padding(start = 8.dp),
-      )
-      Text(
-        "·",
-        color = TextSecondary,
-        fontSize = 10.sp,
-        modifier = Modifier.padding(horizontal = 6.dp),
-      )
-      Text(
-        "Salir",
-        color = Danger,
-        fontSize = 10.sp,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.clickable(onClick = onLogout),
       )
     }
   }
@@ -408,13 +420,14 @@ private fun SearchRow(vm: AppViewModel) {
       onValueChange = { vm.query = it },
       modifier = Modifier.weight(1f),
       singleLine = true,
-      placeholder = { Text("Buscar en transcripciones…", color = TextSecondary, fontSize = 13.sp) },
+      placeholder = { Text("Buscar en transcripciones...", color = TextSecondary, fontSize = 13.sp) },
       keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
       keyboardActions = KeyboardActions(onSearch = { vm.search() }),
+      shape = RoundedCornerShape(10.dp),
       colors = fieldColors(),
     )
     Spacer(Modifier.width(8.dp))
-    Button(onClick = { vm.search() }) { Text("Buscar") }
+    SecondaryButton(text = "Buscar", onClick = { vm.search() })
   }
 }
 
@@ -580,9 +593,7 @@ private fun Detail(
 ) {
   Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-      OutlinedButton(onClick = { vm.close() }, border = BorderStroke(1.dp, BorderCol)) {
-        Text("Cerrar ✕", color = TextPrimary)
-      }
+      SecondaryButton(text = "Cerrar ✕", onClick = { vm.close() })
     }
 
     Spacer(Modifier.height(8.dp))
@@ -595,24 +606,24 @@ private fun Detail(
       Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      Button(onClick = { vm.analyze(rec) }, enabled = !vm.busy) { Text("Analizar") }
-      OutlinedButton(
+      PrimaryButton(text = "Analizar", onClick = { vm.analyze(rec) }, enabled = !vm.busy)
+      SecondaryButton(
+        text = "Resumir",
         onClick = { vm.summarize() },
         enabled = !vm.busy && rec.transcript.orEmpty().isNotEmpty(),
-        border = BorderStroke(1.dp, BorderCol),
-      ) { Text("Resumir", color = TextPrimary) }
+      )
       if (rec.hasLocalAudio) {
-        OutlinedButton(
+        SecondaryButton(
+          text = "Liberar audio",
           onClick = { vm.requestReleaseAudio(rec) },
           enabled = !vm.busy,
-          border = BorderStroke(1.dp, BorderCol),
-        ) { Text("Liberar audio", color = TextPrimary) }
+        )
       }
-      OutlinedButton(
+      DangerButton(
+        text = "Eliminar nota",
         onClick = { vm.requestDelete(rec) },
         enabled = !vm.busy,
-        border = BorderStroke(1.dp, Danger),
-      ) { Text("Eliminar nota", color = Danger) }
+      )
     }
 
     rec.error?.let {
@@ -660,10 +671,11 @@ private fun Detail(
         placeholder = {
           Text("Preguntale a ApIA… ¿Cuáles fueron las conclusiones?", color = TextSecondary, fontSize = 13.sp)
         },
+        shape = RoundedCornerShape(10.dp),
         colors = fieldColors(),
       )
       Spacer(Modifier.width(8.dp))
-      Button(onClick = { vm.ask(question) }, enabled = !vm.busy) { Text("Preguntar") }
+      PrimaryButton(text = "Preguntar", onClick = { vm.ask(question) }, enabled = !vm.busy)
     }
 
     if (vm.answer.isNotBlank()) {
@@ -725,12 +737,12 @@ private fun TranscriptCard(title: String, segments: List<SegmentDto>) {
       Checkbox(checked = exportTimes, onCheckedChange = { exportTimes = it })
       Text("Tiempos", color = TextSecondary, fontSize = 11.sp)
       Spacer(Modifier.width(4.dp))
-      OutlinedButton(
+      SecondaryButton(
+        text = "Exportar",
         onClick = { shareTranscript() },
         enabled = segments.isNotEmpty(),
-        border = BorderStroke(1.dp, BorderCol),
-        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-      ) { Text("Exportar", color = TextPrimary, fontSize = 12.sp) }
+        modifier = Modifier.padding(vertical = 0.dp),
+      )
     }
 
     Spacer(Modifier.height(6.dp))
