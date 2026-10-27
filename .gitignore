@@ -42,3 +42,11 @@ Thumbs.db
 # Variables de entorno con secretos
 web/.env.local
 web/.env.*.local
+
+# Credenciales de hosting (nunca commitear)
+.render-key
+
+# Credenciales locales de testing (nunca commitear)
+.credentials
+# Local AI runtime state
+.atl/

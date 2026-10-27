@@ -9,7 +9,7 @@ Grabá una clase, transcribila, resumila y convertí el contenido en un mapa de 
 
 ## Estructura
 
-- `backend/` Node + Fastify + SQLite (`node:sqlite`). API compartida web/Android. STT/LLM vía Groq (API compatible OpenAI).
+- `backend/` Node + Fastify + Postgres (Supabase, vía `pg`). API compartida web/Android. STT/LLM vía Groq (API compatible OpenAI). Auth con el JWT de Supabase, datos aislados por `user_id`.
 - `web/` React + Vite + TS. Grabación con MediaRecorder, upload, transcripción, resumen, Q&A, búsqueda.
 - `android/` Kotlin nativo con Jetpack Compose. Grabación con MediaRecorder, subida al backend con Retrofit, lista, detalle, resumen, Q&A y los mismos 7 diseños de mapa de ideas que la web.
 - `docs/API.md` contrato compartido.
@@ -21,7 +21,7 @@ Grabá una clase, transcribila, resumila y convertí el contenido en un mapa de 
 - API: <https://api.lecmap.app>
 - El workflow `.github/workflows/deploy-web.yml` compila `web/` y publica `dist/` en cada push a `main`.
 - La URL del backend se configura en la variable de repositorio `VITE_API_URL=https://api.lecmap.app`; hay que volver a desplegar si cambia.
-- `lecmap.app` es el dominio personalizado de GitHub Pages (DNS en Cloudflare, registros A a GitHub Pages y CNAME `www`). `api.lecmap.app` es un túnel nombrado de Cloudflare hacia `http://127.0.0.1:3001`.
+- `lecmap.app` es el dominio personalizado de GitHub Pages (DNS en Cloudflare, registros A a GitHub Pages y CNAME `www`). `api.lecmap.app` es un CNAME a `lecmap-api.onrender.com`, resuelto por Render con su propio certificado Let's Encrypt.
 
 ## MVP v1
 
@@ -83,27 +83,27 @@ La app tiene un selector de servidor (tocar "Cambiar servidor" arriba): acepta `
 
 ### Usar sin USB (Wi-Fi de otra red o datos móviles)
 
-El backend ya está publicado en **`https://api.lecmap.app`** mediante un túnel **nombrado** de Cloudflare (no cambia de URL). En la app, **Cambiar servidor** debe apuntar a `https://api.lecmap.app/`.
+El backend está publicado en **`https://api.lecmap.app`** sobre **Render** (plan Hobby: gratuito y sin tarjeta). En la app, **Cambiar servidor** debe apuntar a `https://api.lecmap.app/`.
 
-Para levantarlo en la PC:
+Cómo quedó montado:
+
+- Servicio `lecmap-api` en Render, root `backend/`, runtime Docker (`backend/Dockerfile`), región Oregon (misma región que Supabase), plan Free.
+- Render inyecta `PORT` (10000) y la app lo lee con `process.env.PORT`; no hace falta setearlo a mano.
+- Variables de entorno del servicio: `DATABASE_URL`, `SUPABASE_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `STT_MODEL`, `CHAT_MODEL`, `CORS_ORIGINS` — todas en `backend/.env.example`.
+- DNS: `api.lecmap.app` es un CNAME a `lecmap-api.onrender.com`, en Cloudflare en modo **DNS only** (sin proxy) para que Render pueda verificar el dominio y emitir su certificado Let's Encrypt.
+- **Cold start:** a los 15 minutos sin tráfico Render suspende la instancia y el siguiente request tarda ~1 minuto. No es un error de la app.
+- Los audios se guardan en `uploads/` del contenedor y se borran apenas termina la transcripción; el disco es efímero y se limpia en cada deploy, por eso no hace falta disco persistente.
+
+Autenticación: el backend valida el JWT de Supabase (ES256 vía JWKS) y filtra todos los datos por `user_id`. Las rutas públicas son `/health` y `/files/:name`; todo lo demás exige `Authorization: Bearer <access_token>`.
+
+Para desarrollo local en la PC:
 
 ```powershell
-# 1) backend con reinicio automático
 cd backend
 powershell -ExecutionPolicy Bypass -File .\start-backend.ps1
-
-# 2) túnel nombrado (en otra consola)
-& "$env:LOCALAPPDATA\AndroidDev\cloudflared.exe" tunnel run lecmap
 ```
 
-Dejá ambas ventanas abiertas. El túnel usa `%USERPROFILE%\.cloudflared\config.yml` y enruta `api.lecmap.app` a `http://127.0.0.1:3001`.
-
-- La PC tiene que quedar encendida con el backend y el túnel corriendo.
-- Si el túnel se reinicia, la URL sigue siendo `https://api.lecmap.app`.
-- El túnel no tiene login propio. Si el backend define `API_TOKEN`, todas las rutas menos `/health` y `/files` exigen `Authorization: Bearer <token>`. En la web se pega en **Ajustes (⚙)** y en Android en **Cambiar servidor**; el token queda guardado en cada dispositivo.
-- Para la misma red se puede usar directamente `http://IP_DE_LA_PC:3001/` (más rápido y sin límite de tiempo del túnel).
-
-Para la misma red, el puerto 3001 debe estar permitido en el firewall de Windows. En una consola **como administrador**:
+Para la misma red usá `http://IP_DE_LA_PC:3001/`. El puerto 3001 debe estar permitido en el firewall de Windows. En una consola **como administrador**:
 
 ```powershell
 New-NetFirewallRule -DisplayName "Lecmap backend 3001" -Direction Inbound -Protocol TCP -LocalPort 3001 -Action Allow
