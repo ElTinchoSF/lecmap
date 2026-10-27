@@ -94,6 +94,7 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
   val lifecycleOwner = LocalLifecycleOwner.current
   var question by remember { mutableStateOf("") }
   var showServer by remember { mutableStateOf(false) }
+  var showLogout by remember { mutableStateOf(false) }
 
   // Al volver a la app, reintenta grabaciones que quedaron sin subir.
   DisposableEffect(lifecycleOwner) {
@@ -180,8 +181,10 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
           recording = RecordingState.isRecording,
           serverUrl = vm.serverUrl,
           busy = busy,
+          email = vm.userEmail,
           onToggle = ::toggleRecording,
           onServer = { showServer = true },
+          onLogout = { showLogout = true },
         )
       }
 
@@ -253,6 +256,35 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
     )
   }
 
+  if (showLogout) {
+    AlertDialog(
+      onDismissRequest = { showLogout = false },
+      containerColor = Surface1,
+      title = { Text("Cerrar sesión", color = TextPrimary) },
+      text = {
+        Text(
+          buildString {
+            append("Vas a cerrar sesión en ")
+            append(vm.userEmail.ifBlank { "esta cuenta" })
+            append(".\n\nTus grabaciones se conservan en el servidor y volverán a verse al iniciar sesión en este teléfono.")
+          },
+          color = TextSecondary,
+          fontSize = 13.sp,
+          lineHeight = 18.sp,
+        )
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          showLogout = false
+          vm.signOut()
+        }) { Text("Cerrar sesión", color = Danger) }
+      },
+      dismissButton = {
+        TextButton(onClick = { showLogout = false }) { Text("Cancelar", color = TextSecondary) }
+      },
+    )
+  }
+
   if (showServer) {
     var draft by remember { mutableStateOf(vm.serverUrl) }
     var urlError by remember { mutableStateOf<String?>(null) }
@@ -304,8 +336,10 @@ private fun Header(
   recording: Boolean,
   serverUrl: String,
   busy: Boolean,
+  email: String,
   onToggle: () -> Unit,
   onServer: () -> Unit,
+  onLogout: () -> Unit,
 ) {
   Column(Modifier.fillMaxWidth()) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -335,7 +369,7 @@ private fun Header(
     }
     Row(Modifier.fillMaxWidth().padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
       Text(
-        serverUrl,
+        email.ifBlank { serverUrl },
         color = TextSecondary,
         fontSize = 10.sp,
         maxLines = 1,
@@ -348,6 +382,19 @@ private fun Header(
         fontSize = 10.sp,
         fontWeight = FontWeight.Bold,
         modifier = Modifier.clickable(onClick = onServer).padding(start = 8.dp),
+      )
+      Text(
+        "·",
+        color = TextSecondary,
+        fontSize = 10.sp,
+        modifier = Modifier.padding(horizontal = 6.dp),
+      )
+      Text(
+        "Salir",
+        color = Danger,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.clickable(onClick = onLogout),
       )
     }
   }
