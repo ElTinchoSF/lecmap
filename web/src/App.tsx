@@ -751,6 +751,8 @@ export default function App() {
   const [question, setQuestion] = useState('');
   const [answer, setAnswer] = useState('');
   const [rec, setRec] = useState(false);
+  // S3: toma en pausa (MediaRecorder.pause); el botón del header espejea el estado.
+  const [recPaused, setRecPaused] = useState(false);
   const [busy, setBusy] = useState(false);
   const [activeSeg, setActiveSeg] = useState<number>(-1);
   const [error, setError] = useState<string | null>(null);
@@ -855,6 +857,7 @@ export default function App() {
     if (rec) {
       mr.current?.stop();
       setRec(false);
+      setRecPaused(false);
       return;
     }
     try {
@@ -896,8 +899,29 @@ export default function App() {
       m.start(1000);
       mr.current = m;
       setRec(true);
+      setRecPaused(false);
     } catch (e) {
       setError('No se pudo acceder al micrófono: ' + errText(e));
+    }
+  };
+
+  /** S3: pausa/reanuda la toma en curso. El onstop de mr conserva los chunks
+   *  acumulados, así que detener tras una pausa guarda una sola nota con todo. */
+  const pauseRec = () => {
+    try {
+      mr.current?.pause();
+      setRecPaused(true);
+    } catch (e) {
+      setError('No se pudo pausar la grabación: ' + errText(e));
+    }
+  };
+
+  const resumeRec = () => {
+    try {
+      mr.current?.resume();
+      setRecPaused(false);
+    } catch (e) {
+      setError('No se pudo reanudar la grabación: ' + errText(e));
     }
   };
 
@@ -1256,6 +1280,12 @@ export default function App() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {auth.session && (
             <button className="btn btn-secondary" onClick={() => auth.signOut()} title="Cerrar sesión">Salir</button>
+          )}
+          {/* S3: Pausar/Reanudar junto a Detener mientras hay toma activa. */}
+          {rec && (
+            <button className="btn btn-secondary" onClick={recPaused ? resumeRec : pauseRec} disabled={busy}>
+              {recPaused ? '▶ Reanudar' : '⏸ Pausar'}
+            </button>
           )}
           <button className={`btn ${rec ? 'btn-recording' : 'btn-primary'}`} onClick={toggleRec} disabled={busy}>
             {rec ? '■ Detener' : '● Grabar'}

@@ -171,6 +171,14 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
     }
   }
 
+  /** S3: pausa/reanuda la grabación en curso vía RecordingService. */
+  fun togglePauseRecording() {
+    context.startService(
+      Intent(context, RecordingService::class.java)
+        .setAction(RecordingService.ACTION_PAUSE)
+    )
+  }
+
   val busy = vm.busy || RecordingState.isUploading
 
   Scaffold(containerColor = Bg) { padding ->
@@ -182,10 +190,12 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
       item {
         Header(
           recording = RecordingState.isRecording,
+          paused = RecordingState.isPaused,
           serverUrl = vm.serverUrl,
           busy = busy,
           email = vm.userEmail,
           onToggle = ::toggleRecording,
+          onPause = ::togglePauseRecording,
           onServer = { showServer = true },
           onLogout = { showLogout = true },
         )
@@ -336,10 +346,12 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
 @Composable
 private fun Header(
   recording: Boolean,
+  paused: Boolean,
   serverUrl: String,
   busy: Boolean,
   email: String,
   onToggle: () -> Unit,
+  onPause: () -> Unit,
   onServer: () -> Unit,
   onLogout: () -> Unit,
 ) {
@@ -368,6 +380,16 @@ private fun Header(
         enabled = !busy,
         modifier = Modifier.padding(end = 8.dp),
       )
+      // S3: mientras hay toma en curso, Pausar/Reanudar junto a Detener.
+      // El label del botón es también el espejo del estado (grabando / pausa).
+      if (recording) {
+        SecondaryButton(
+          text = if (paused) "▶ Reanudar" else "⏸ Pausar",
+          onClick = onPause,
+          enabled = !busy,
+          modifier = Modifier.padding(end = 8.dp),
+        )
+      }
       Button(
         onClick = onToggle,
         enabled = !busy,

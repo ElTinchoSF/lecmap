@@ -31,6 +31,10 @@ import java.util.Locale
 object RecordingState {
   var isRecording by mutableStateOf(false)
     internal set
+
+  /** S3: grabación en pausa (MediaRecorder.pause()). La UI muestra "Reanudar". */
+  var isPaused by mutableStateOf(false)
+    internal set
   var isUploading by mutableStateOf(false)
     internal set
   var startedAt by mutableStateOf(0L)
@@ -71,6 +75,7 @@ class RecordingService : Service() {
   companion object {
     const val ACTION_START = "com.notasia.clone.action.START"
     const val ACTION_STOP = "com.notasia.clone.action.STOP"
+    const val ACTION_PAUSE = "com.notasia.clone.action.PAUSE"
     private const val CHANNEL_ID = "grabacion"
     private const val NOTIFICATION_ID = 42
   }
@@ -91,8 +96,37 @@ class RecordingService : Service() {
     when (intent?.action) {
       ACTION_START -> if (recorder == null) startRecording()
       ACTION_STOP -> stopAndSave()
+      ACTION_PAUSE -> togglePause()
     }
     return START_NOT_STICKY
+  }
+
+  /** S3: pausa/reanuda la toma en curso y refleja el estado en la notificación. */
+  private fun togglePause() {
+    val r = recorder ?: return
+    try {
+      if (RecordingState.isPaused) {
+        r.resume()
+        RecordingState.isPaused = false
+        refreshNotification("Grabando… tocá Detener para finalizar")
+      } else {
+        r.pause()
+        RecordingState.isPaused = true
+        refreshNotification("En pausa… tocá Detener para guardar")
+      }
+    } catch (e: Exception) {
+      // Estado inconsistente (p.ej. stop() intermedio): el usuario lo ve en la UI.
+      RecordingState.uploadError = if (RecordingState.isPaused) {
+        "No se pudo reanudar la grabación"
+      } else {
+        "No se pudo pausar la grabación"
+      }
+    }
+  }
+
+  private fun refreshNotification(text: String) {
+    getSystemService(NotificationManager::class.java)
+      .notify(NOTIFICATION_ID, buildNotification(text))
   }
 
   private fun createChannel() {
@@ -122,6 +156,14 @@ class RecordingService : Service() {
       Intent(this, RecordingService::class.java).setAction(ACTION_STOP),
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
+    // S3: acción de pausa/reanudar también desde la notificación (el estado
+    // isPaused define qué acción y qué texto muestra).
+    val pause = PendingIntent.getService(
+      this,
+      2,
+      Intent(this, RecordingService::class.java).setAction(ACTION_PAUSE),
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
     return NotificationCompat.Builder(this, CHANNEL_ID)
       .setContentTitle("Lecmap")
       .setContentText(text)
@@ -129,6 +171,7 @@ class RecordingService : Service() {
       .setOngoing(true)
       .setOnlyAlertOnce(true)
       .setContentIntent(open)
+      .addAction(0, if (RecordingState.isPaused) "Reanudar" else "Pausar", pause)
       .addAction(0, "Detener", stop)
       .build()
   }
@@ -160,6 +203,7 @@ class RecordingService : Service() {
       output = file
       startedAt = start
       RecordingState.isRecording = true
+      RecordingState.isPaused = false
       RecordingState.startedAt = start
       RecordingState.activeFile = file.absolutePath
       RecordingState.uploadError = null
@@ -202,6 +246,9 @@ class RecordingService : Service() {
       output = null
       startedAt = 0L
       RecordingState.isRecording = false
+      // Detener desde pausa guarda UNA sola nota con todo el audio (S3):
+      // MediaRecorder.stop() acepta el estado paused y cierra el archivo.
+      RecordingState.isPaused = false
       RecordingState.startedAt = 0L
       // El archivo ya no está en curso: recoverOrphans vuelve a poder verlo
       // (si la upsert async de abajo no llega, la recupera él como huérfano
@@ -274,6 +321,7 @@ class RecordingService : Service() {
       output = null
       startedAt = 0L
       RecordingState.isRecording = false
+      RecordingState.isPaused = false
       RecordingState.startedAt = 0L
       RecordingState.activeFile = null
 
