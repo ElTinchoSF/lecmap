@@ -140,11 +140,11 @@ private fun AuthSplash() {
       style = TextStyle(
         brush = Brush.linearGradient(AccentGradient),
         fontWeight = FontWeight.Bold,
-        fontSize = 32.sp,
+        fontSize = 40.sp,
       ),
     )
-    Spacer(Modifier.height(4.dp))
-    Text("Tus clases, en un mapa", color = TextSecondary, fontSize = 14.sp)
+    Spacer(Modifier.height(6.dp))
+    Text("Tus clases, en un mapa", color = TextSecondary, fontSize = 15.sp)
     Spacer(Modifier.height(24.dp))
     CircularProgressIndicator(color = Accent, modifier = Modifier.size(28.dp))
   }

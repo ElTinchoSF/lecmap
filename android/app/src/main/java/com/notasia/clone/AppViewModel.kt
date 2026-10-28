@@ -268,6 +268,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       .putString("auth_refresh_token", refreshToken)
       .putString("auth_email", userEmail)
       .apply()
+    // Punto 2: tras cualquier login (email o Google) el AuthSplash cubre el
+    // delay hasta que refresh() cargue las RecordingCards — persistAuth ya
+    // dispara refresh() abajo, y su finally baja esta bandera.
+    initialSessionCheck = true
     refresh()
   }
 
