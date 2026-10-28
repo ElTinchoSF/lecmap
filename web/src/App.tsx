@@ -15,7 +15,26 @@ import { LoginScreen } from './Login';
 import { supabase } from './supabase';
 import './App.css';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// S2 (fila 3): "Cambiar servidor" persiste un override en localStorage con
+// prioridad sobre el valor de build; se vuelve a leer en cada carga de página.
+function readApiOverride(): string | null {
+  try {
+    return localStorage.getItem('lecmap_api_url');
+  } catch {
+    return null;
+  }
+}
+
+function writeApiOverride(url: string | null): void {
+  try {
+    if (url === null) localStorage.removeItem('lecmap_api_url');
+    else localStorage.setItem('lecmap_api_url', url);
+  } catch {
+    // sin storage (modo privado): la sesión de settings se cierra igual
+  }
+}
+
+const API = readApiOverride() || import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 /** Obtiene el access token de Supabase para las llamadas al backend. */
 async function getAccessToken(): Promise<string> {
@@ -742,7 +761,9 @@ export default function App() {
   const [serverNotes, setServerNotes] = useState<Recording[]>([]);
   const [locals, setLocals] = useState<LocalNote[]>([]);
   const [serverOk, setServerOk] = useState(true);
-  const [showSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  // S2 (fila 3): borrador del input de "Cambiar servidor".
+  const [apiDraft, setApiDraft] = useState(API);
   const [exportTimes, setExportTimes] = useState(true);
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -1339,6 +1360,23 @@ export default function App() {
             {rec ? '■ Detener' : '● Grabar'}
           </button>
         </div>
+        {/* S2 fila 3: email/servidor + Cambiar servidor (espejo de Android). */}
+        {auth.session && (
+          <div className="header-meta">
+            <span className="header-meta-info" title={API}>
+              {auth.session.user?.email || API}
+            </span>
+            <button
+              className="header-meta-link"
+              onClick={() => {
+                setApiDraft(API);
+                setShowSettings((v) => !v);
+              }}
+            >
+              Cambiar servidor
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="toolbar">
@@ -1383,7 +1421,32 @@ export default function App() {
         <div className="settings-panel">
           <div className="settings-row">
             <span className="settings-label">API</span>
-            <code className="settings-url">{API}</code>
+            <input
+              className="settings-input"
+              value={apiDraft}
+              onChange={(e) => setApiDraft(e.target.value)}
+              placeholder="https://api.ejemplo.com"
+              aria-label="URL del servidor"
+            />
+            <button
+              className="btn btn-primary"
+              disabled={!apiDraft.trim() || apiDraft.trim() === API}
+              onClick={() => {
+                writeApiOverride(apiDraft.trim());
+                window.location.reload();
+              }}
+            >
+              Guardar
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                writeApiOverride(null);
+                window.location.reload();
+              }}
+            >
+              Restablecer
+            </button>
           </div>
           <p className="settings-help">
             Autenticación vía Supabase. Sesión: {auth.session?.user?.email ?? '—'}.
