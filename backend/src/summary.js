@@ -62,3 +62,15 @@ export async function condenseToFit(parts, condense, maxChars, maxRounds = 4) {
   }
   return { material, rounds: round };
 }
+
+// Prompt del call final de resumen. Vive separado del prompt del mindmap para
+// que el resumen tenga su propio maxTokens y no compita con el JSON del mapa
+// de ideas (un mapa multi-sección se come los tokens de salida del call único).
+export function summarySystemPrompt(targetSentences) {
+  return 'Eres un experto que escribe resúmenes de estudio en español a partir del material de una clase. '
+    + 'Responde SOLO JSON con esta forma exacta: {"summary": string}. '
+    + 'El summary debe ser un resumen de estudio de aproximadamente ' + targetSentences
+    + ' frases; priorizá cubrir todas las ideas principales antes que acortar. '
+    + 'No repitas ideas y no inventes contenido ausente. '
+    + 'Sin encabezados ni preámbulo: sólo el campo summary.';
+}

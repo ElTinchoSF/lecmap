@@ -116,13 +116,14 @@ test('normalizeMindmap devuelve null para entrada vacía', () => {
 // --- Prompt v2 ---
 
 test('mindmapSystemPrompt pide secciones con layout propio por tema', () => {
-  const p = mindmapSystemPrompt('general', 48);
+  const p = mindmapSystemPrompt('general');
   // El layout vive dentro de cada sección, no como campo único del mindmap.
   assert.match(p, /"sections":\s*\[\{"title": string, "layout"/);
   assert.match(p, /tema central/i);
 });
 
-test('mindmapSystemPrompt mantiene el objetivo de frases escalonado', () => {
-  const p = mindmapSystemPrompt('general', 48);
-  assert.match(p, /aproximadamente 48\s+frases/);
+test('mindmapSystemPrompt ya no pide el summary (sale en call dedicado)', () => {
+  const p = mindmapSystemPrompt('general');
+  assert.ok(!/"summary"/.test(p), 'el schema del mindmap no debe incluir summary');
+  assert.ok(!/El summary debe ser/.test(p), 'el objetivo de frases vive en summarySystemPrompt');
 });
