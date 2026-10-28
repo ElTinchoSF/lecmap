@@ -10,23 +10,23 @@ import {
 
 test('targetSummarySentences aplica el piso de 6 frases', () => {
   assert.equal(targetSummarySentences(0), 6);
-  assert.equal(targetSummarySentences(10), 6); // 10 × 0.4 = 4 → piso
+  assert.equal(targetSummarySentences(9), 6); // 9 × 0.6 = 5.4 → piso
 });
 
 test('targetSummarySentences escala linealmente en el rango medio', () => {
-  assert.equal(targetSummarySentences(45), 18); // 45 × 0.4 = 18
-  assert.equal(targetSummarySentences(120), 48); // 2h → 48 frases ≈ 700-800 palabras
+  assert.equal(targetSummarySentences(45), 27); // 45 × 0.6 = 27
+  assert.equal(targetSummarySentences(72), 43); // clase real de 71.8 min ≈ 43 frases
 });
 
 test('targetSummarySentences aplica el techo de 70 frases', () => {
-  assert.equal(targetSummarySentences(175), 70); // 175 × 0.4 = 70 exacto
+  assert.equal(targetSummarySentences(117), 70); // 117 × 0.6 = 70.2 → techo
   assert.equal(targetSummarySentences(300), 70); // techo
 });
 
 test('targetSummarySentences tolera entradas sucias', () => {
   assert.equal(targetSummarySentences(NaN), 6);
   assert.equal(targetSummarySentences(-5), 6);
-  assert.equal(targetSummarySentences('90'), 36);
+  assert.equal(targetSummarySentences('90'), 54); // 90 × 0.6 = 54
 });
 
 test('transcriptDurationSeconds toma el end más grande', () => {
