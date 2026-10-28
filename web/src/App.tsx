@@ -65,6 +65,10 @@ type MindData = {
   problems: MindProblem[];
 };
 
+// Documento v2: un mindmap puede traer varias secciones (un layout por tema
+// central). El formato viejo single-layout se normaliza como una sola sección.
+type MindDocument = { title: string; sections: MindData[] };
+
 const ALL_LAYOUTS: MindLayout[] = [
   'topics', 'comparison', 'steps', 'timeline', 'glossary', 'cause', 'solution',
 ];
@@ -104,7 +108,7 @@ type RawTerm = { term?: unknown; label?: unknown; name?: unknown; definition?: u
 type RawCause = { label?: unknown; cause?: unknown; detail?: unknown; effects?: unknown; points?: unknown };
 type RawProblem = { label?: unknown; problem?: unknown; detail?: unknown; solutions?: unknown; points?: unknown };
 type RawMindmap = {
-  title?: unknown; layout?: unknown; root?: unknown;
+  title?: unknown; layout?: unknown; root?: unknown; sections?: unknown;
   topics?: unknown; branches?: unknown; nodes?: unknown; children?: unknown;
   dimensions?: unknown; items?: unknown; steps?: unknown; events?: unknown;
   terms?: unknown; causes?: unknown; problems?: unknown;
@@ -301,11 +305,9 @@ function buildSolution(mm: RawMindmap, title: string): MindData | null {
   return problems.length > 0 ? { ...emptyData('solution', title), problems } : null;
 }
 
-// Normaliza a un modelo con layout elegido por la IA. Si el layout pedido no trae
+// Normaliza un objeto con layout elegido por la IA. Si el layout pedido no trae
 // datos, prueba los demás y, como último recurso, cae al mapa de temas.
-export function normalizeMindmap(mm: unknown): MindData | null {
-  if (!mm || typeof mm !== 'object') return null;
-  const raw = mm as RawMindmap;
+function normalizeSection(raw: RawMindmap): MindData | null {
   const title = str(raw.title);
   const layout = str(raw.layout);
   const requested: MindLayout = (ALL_LAYOUTS as string[]).includes(layout)
@@ -333,6 +335,23 @@ export function normalizeMindmap(mm: unknown): MindData | null {
     if (data) return data;
   }
   return null;
+}
+
+// Formato v2: { title, sections: [{ title, layout, ...payload }] } — un layout
+// por tema central. Formato viejo single-layout se envuelve como una sección.
+export function normalizeMindmap(mm: unknown): MindDocument | null {
+  if (!mm || typeof mm !== 'object') return null;
+  const raw = mm as RawMindmap;
+  if (Array.isArray(raw.sections)) {
+    const title = str(raw.title);
+    const sections = arr<unknown>(raw.sections)
+      .map((s) => (s && typeof s === 'object' ? normalizeSection(s as RawMindmap) : null))
+      .filter((s): s is MindData => s !== null);
+    if (sections.length === 0) return null;
+    return { title: title || sections[0].title, sections };
+  }
+  const data = normalizeSection(raw);
+  return data ? { title: data.title, sections: [data] } : null;
 }
 
 const BRANCH_COLORS = ['#38bdf8', '#818cf8', '#34d399', '#fbbf24', '#f472b6', '#22d3ee'];
@@ -604,22 +623,31 @@ function SolutionView({ data }: { data: MindData }) {
   );
 }
 
-function MindmapView({ mm }: { mm: unknown }) {
-  const data = normalizeMindmap(mm);
-  if (!data) return null;
-
-  let body: ReactNode;
+function layoutBody(data: MindData): ReactNode {
   switch (data.layout) {
-    case 'comparison': body = <ComparisonView data={data} />; break;
-    case 'steps': body = <StepsView data={data} />; break;
-    case 'timeline': body = <TimelineView data={data} />; break;
-    case 'glossary': body = <GlossaryView data={data} />; break;
-    case 'cause': body = <CauseView data={data} />; break;
-    case 'solution': body = <SolutionView data={data} />; break;
-    default: body = <TopicsView data={data} />;
+    case 'comparison': return <ComparisonView data={data} />;
+    case 'steps': return <StepsView data={data} />;
+    case 'timeline': return <TimelineView data={data} />;
+    case 'glossary': return <GlossaryView data={data} />;
+    case 'cause': return <CauseView data={data} />;
+    case 'solution': return <SolutionView data={data} />;
+    default: return <TopicsView data={data} />;
   }
+}
 
-  return <div className="mindmap">{body}</div>;
+function MindmapView({ mm }: { mm: unknown }) {
+  const doc = normalizeMindmap(mm);
+  if (!doc || doc.sections.length === 0) return null;
+
+  return (
+    <div className="mindmap">
+      {doc.sections.map((data, i) => (
+        <div className="mm-section" key={`${data.title}-${i}`}>
+          {layoutBody(data)}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function serverAudioUrl(audioPath?: string | null): string | null {
