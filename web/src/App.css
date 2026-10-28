@@ -28,9 +28,21 @@ body {
 
 .header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column; /* S2: fila 1 = marca, fila 2 = botones */
   margin-bottom: 24px;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.btn-icon {
+  padding: 10px 0;
+  min-width: 40px;
 }
 
 .brand {

@@ -33,12 +33,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -460,39 +465,53 @@ private fun Header(
   onLogout: () -> Unit,
 ) {
   Column(Modifier.fillMaxWidth()) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-      Column(Modifier.weight(1f)) {
-        Text(
-          text = "Lecmap",
-          style = TextStyle(
-            brush = Brush.linearGradient(AccentGradient),
-            fontWeight = FontWeight.Bold,
-            fontSize = 28.sp,
-          ),
-        )
-        Text(
-          "Tus clases, en un mapa",
-          color = TextSecondary,
-          fontSize = 12.sp,
-          modifier = Modifier.padding(top = 2.dp),
-        )
-      }
-      // Mismo patrón que la web: Salir (secundario) a la izquierda de Grabar.
-      SecondaryButton(
-        text = "Salir",
-        onClick = onLogout,
-        enabled = !busy,
-        modifier = Modifier.padding(end = 8.dp),
+    // Fila 1 (S2): nombre de la app y frase, en su propia fila.
+    Column(Modifier.fillMaxWidth()) {
+      Text(
+        text = "Lecmap",
+        style = TextStyle(
+          brush = Brush.linearGradient(AccentGradient),
+          fontWeight = FontWeight.Bold,
+          fontSize = 28.sp,
+        ),
       )
-      // S3: mientras hay toma en curso, Pausar/Reanudar junto a Detener.
-      // El label del botón es también el espejo del estado (grabando / pausa).
-      if (recording) {
+      Text(
+        "Tus clases, en un mapa",
+        color = TextSecondary,
+        fontSize = 12.sp,
+        modifier = Modifier.padding(top = 2.dp),
+      )
+    }
+    // Fila 2 (S2): los botones en su propia fila — el header no se desplaza.
+    // Con grabación activa: Salir oculto (no tiene sentido salir en una toma)
+    // y pausa/reanudar SÓLO ícono, con ancho fijo. Mismo patrón que la web:
+    // Salir (secundario) a la izquierda de Grabar.
+    Row(
+      Modifier.fillMaxWidth().padding(top = 8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.End,
+    ) {
+      if (!recording) {
         SecondaryButton(
-          text = if (paused) "▶ Reanudar" else "⏸ Pausar",
-          onClick = onPause,
+          text = "Salir",
+          onClick = onLogout,
           enabled = !busy,
           modifier = Modifier.padding(end = 8.dp),
         )
+      } else {
+        IconButton(
+          onClick = onPause,
+          enabled = !busy,
+          modifier = Modifier
+            .padding(end = 8.dp)
+            .size(40.dp),
+        ) {
+          Icon(
+            imageVector = if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
+            contentDescription = if (paused) "Reanudar grabación" else "Pausar grabación",
+            tint = Accent,
+          )
+        }
       }
       Button(
         onClick = onToggle,

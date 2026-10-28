@@ -1317,14 +1317,22 @@ export default function App() {
           <h1>Lecmap</h1>
           <p className="tagline">Tus clases, en un mapa</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {auth.session && (
+        {/* S2: fila de botones propia — con toma activa Salir queda oculto (no
+            tiene sentido salir en una grabación) y la pausa es SÓLO ícono,
+            con ancho fijo: el header no se desplaza entre estados. */}
+        <div className="header-actions">
+          {auth.session && !rec && (
             <button className="btn btn-secondary" onClick={() => auth.signOut()} title="Cerrar sesión">Salir</button>
           )}
-          {/* S3: Pausar/Reanudar junto a Detener mientras hay toma activa. */}
           {rec && (
-            <button className="btn btn-secondary" onClick={recPaused ? resumeRec : pauseRec} disabled={busy}>
-              {recPaused ? '▶ Reanudar' : '⏸ Pausar'}
+            <button
+              className="btn btn-secondary btn-icon"
+              onClick={recPaused ? resumeRec : pauseRec}
+              disabled={busy}
+              title={recPaused ? 'Reanudar' : 'Pausar'}
+              aria-label={recPaused ? 'Reanudar grabación' : 'Pausar grabación'}
+            >
+              {recPaused ? '▶' : '⏸'}
             </button>
           )}
           <button className={`btn ${rec ? 'btn-recording' : 'btn-primary'}`} onClick={toggleRec} disabled={busy}>
