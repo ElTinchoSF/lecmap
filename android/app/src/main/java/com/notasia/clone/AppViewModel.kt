@@ -2,6 +2,8 @@ package com.notasia.clone
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -145,6 +147,82 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         authLoading = false
       }
     }
+  }
+
+  /**
+   * S3: Continuar con Google — abre el authorize de Supabase en el navegador
+   * con flujo PKCE. El callback vuelve por deep link
+   * (com.notasia.clone://login-callback) a handleOAuthCallback().
+   */
+  fun signInWithGoogle() {
+    val cfg = SupabaseAuth.config ?: run {
+      authError = "Supabase no configurado"
+      return
+    }
+    authError = null
+    val verifier = randomCodeVerifier()
+    prefs.edit().putString("pkce_verifier", verifier).apply()
+    val base = if (cfg.url.endsWith("/")) cfg.url.dropLast(1) else cfg.url
+    val redirect = "com.notasia.clone://login-callback"
+    val url = "$base/auth/v1/authorize" +
+      "?provider=google" +
+      "&redirect_to=${Uri.encode(redirect)}" +
+      "&code_challenge=${Uri.encode(codeChallengeS256(verifier))}" +
+      "&code_challenge_method=s256"
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+      getApplication<Application>().startActivity(intent)
+    } catch (_: Exception) {
+      authError = "No se pudo abrir el navegador"
+    }
+  }
+
+  /**
+   * S3: cierra el OAuth de Google — intercambia el `code` del callback por la
+   * sesión (PKCE), o expone el error/cancelación en la pantalla de login.
+   */
+  fun handleOAuthCallback(code: String?, error: String?) {
+    if (code == null) {
+      authError = error ?: "Login con Google cancelado"
+      return
+    }
+    val verifier = prefs.getString("pkce_verifier", "") ?: ""
+    if (verifier.isEmpty()) {
+      authError = "Sesión de Google inválida — probá de nuevo"
+      return
+    }
+    viewModelScope.launch {
+      authLoading = true
+      try {
+        val res = withContext(Dispatchers.IO) {
+          SupabaseAuth.pkceExchange(code, verifier)
+        }
+        prefs.edit().remove("pkce_verifier").apply()
+        persistAuth(res)
+      } catch (e: Exception) {
+        authError = e.message ?: "No se pudo completar el login con Google"
+      } finally {
+        authLoading = false
+      }
+    }
+  }
+
+  private fun randomCodeVerifier(): String {
+    val bytes = ByteArray(64).also { java.security.SecureRandom().nextBytes(it) }
+    return android.util.Base64.encodeToString(
+      bytes,
+      android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING,
+    )
+  }
+
+  private fun codeChallengeS256(verifier: String): String {
+    val digest = java.security.MessageDigest.getInstance("SHA256")
+      .digest(verifier.toByteArray(Charsets.US_ASCII))
+    return android.util.Base64.encodeToString(
+      digest,
+      android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING,
+    )
   }
 
   fun signOut() {

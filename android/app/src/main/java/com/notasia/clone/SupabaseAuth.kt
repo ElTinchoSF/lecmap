@@ -15,6 +15,10 @@ data class SupabaseConfig(
 
 data class SignUpReq(val email: String, val password: String)
 data class SignInReq(val email: String, val password: String)
+data class PkceExchangeReq(
+  @SerializedName("auth_code") val authCode: String,
+  @SerializedName("code_verifier") val codeVerifier: String,
+)
 
 data class AuthRes(
   @SerializedName("access_token") val accessToken: String,
@@ -46,6 +50,9 @@ interface SupabaseAuthApi {
   @FormUrlEncoded
   @POST("auth/v1/token?grant_type=refresh_token")
   suspend fun refresh(@Field("refresh_token") refreshToken: String): Response<AuthRes>
+
+  @POST("auth/v1/token?grant_type=pkce_exchange")
+  suspend fun pkceExchange(@Body body: PkceExchangeReq): Response<AuthRes>
 }
 
 /**
@@ -127,6 +134,14 @@ object SupabaseAuth {
   suspend fun refresh(refreshToken: String): AuthRes {
     val a = api() ?: throw AuthException("Supabase no configurado")
     val r = a.refresh(refreshToken)
+    if (!r.isSuccessful) throw AuthException(parseError(r))
+    return r.body() ?: throw AuthException("Respuesta vacía del servidor")
+  }
+
+  /** S3: intercambia el `code` del callback OAuth por la sesión (PKCE). */
+  suspend fun pkceExchange(authCode: String, codeVerifier: String): AuthRes {
+    val a = api() ?: throw AuthException("Supabase no configurado")
+    val r = a.pkceExchange(PkceExchangeReq(authCode, codeVerifier))
     if (!r.isSuccessful) throw AuthException(parseError(r))
     return r.body() ?: throw AuthException("Respuesta vacía del servidor")
   }

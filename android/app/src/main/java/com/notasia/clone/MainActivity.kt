@@ -77,16 +77,45 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.io.File
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     setContent {
       LecmapTheme { AppScreen() }
+    }
+    handleOAuthIntent(intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    handleOAuthIntent(intent)
+  }
+
+  /**
+   * S3: callback del flujo Google — com.notasia.clone://login-callback?code=…
+   * Se consume una sola vez (se limpia el data) y se resuelve en el mismo
+   * ViewModel que usa la composición; los errores/cancelaciones se muestran
+   * en la pantalla de login.
+   */
+  private fun handleOAuthIntent(intent: Intent?) {
+    val uri = intent?.data ?: return
+    val code = uri.getQueryParameter("code")
+    val oauthError = uri.getQueryParameter("error_description")
+      ?: uri.getQueryParameter("error")
+    intent.data = null
+    if (code == null && oauthError == null) return
+    val vm = ViewModelProvider(this)[AppViewModel::class.java]
+    lifecycleScope.launch {
+      vm.handleOAuthCallback(code, oauthError)
     }
   }
 }
