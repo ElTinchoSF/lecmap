@@ -754,6 +754,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [activeSeg, setActiveSeg] = useState<number>(-1);
   const [error, setError] = useState<string | null>(null);
+  // S8: serverId cuyo detalle se está cargando; la tarjeta muestra "Cargando nota…".
+  const [loadingId, setLoadingId] = useState<string | null>(null);
   const mr = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -905,6 +907,7 @@ export default function App() {
     let view = note;
 
     if (note.serverId) {
+      setLoadingId(note.serverId);
       try {
         const r = await apiFetch(`/recordings/${note.serverId}`);
         if (r.ok) {
@@ -931,6 +934,7 @@ export default function App() {
       } catch {
         // Sin red: usamos la copia local si existe.
       }
+      setLoadingId(null);
     }
 
     setSel(view);
@@ -1314,10 +1318,19 @@ export default function App() {
                 onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(note); } }}
               >
                 <div className="rec-title">{note.title}</div>
-                <div className={`rec-status ${note.status}`}>
-                  {note.serverId ? note.status : 'local'}
-                  {note.hasLocalAudio ? ' · audio local' : ''}
-                </div>
+                {/* S7: sin estado crudo "summarizing" cuando ya hay label de resumen. */}
+                {note.status !== 'summarizing' && (
+                  <div className={`rec-status ${note.status}`}>
+                    {note.serverId ? note.status : 'local'}
+                    {note.hasLocalAudio ? ' · audio local' : ''}
+                  </div>
+                )}
+                {/* S8: label mientras se carga el detalle del servidor. */}
+                {loadingId && note.serverId === loadingId && (
+                  <div style={{ marginTop: 8, color: 'var(--accent)', fontSize: 12 }}>
+                    Cargando nota…
+                  </div>
+                )}
                 {note.status === 'summarizing' ? (
                   <div style={{ marginTop: 8, color: 'var(--accent)', fontSize: 12 }}>
                     Resumiendo… puede tardar unos minutos
@@ -1344,7 +1357,10 @@ export default function App() {
               <div className="detail-header">
                 <h2>{sel.title}</h2>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  {/* S7: durante "summarizing" solo queda el label de resumen. */}
+                {sel.status !== 'summarizing' && (
                   <span className={`status-badge ${sel.status}`}>{sel.serverId ? sel.status : 'local'}</span>
+                )}
                   <button className="btn btn-secondary" onClick={close} title="Cerrar detalle">Cerrar ✕</button>
                   <button className="btn btn-danger" onClick={remove} disabled={busy || sel.status === 'summarizing'}>Eliminar nota</button>
                 </div>

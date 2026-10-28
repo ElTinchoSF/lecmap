@@ -70,6 +70,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   var pendingRelease by mutableStateOf<RecordingDto?>(null)
     private set
 
+  /**
+   * serverId cuyo detalle se está cargando del servidor (S8): mientras es
+   * distinto de null, la tarjeta correspondiente muestra "Cargando nota…".
+   */
+  var loadingNoteId by mutableStateOf<String?>(null)
+    private set
+
   var serverUrl by mutableStateOf(
     Net.normalize(prefs.getString("server_url", Net.DEFAULT_BASE_URL) ?: Net.DEFAULT_BASE_URL)
   )
@@ -251,6 +258,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       answer = ""
       return
     }
+    loadingNoteId = serverId
     viewModelScope.launch {
       try {
         val detail = withContext(Dispatchers.IO) { api.get(serverId) }
@@ -259,6 +267,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         answer = ""
       } catch (e: Exception) {
         if (!handleGone(e)) error = friendly(e)
+      } finally {
+        loadingNoteId = null
       }
     }
   }

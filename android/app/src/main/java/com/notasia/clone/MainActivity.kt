@@ -207,6 +207,7 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
             rec = rec,
             active = vm.selected?.id == rec.id,
             busy = busy,
+            loading = vm.loadingNoteId != null && rec.serverId != null && vm.loadingNoteId == rec.serverId,
             onClick = { vm.toggle(rec) },
             onAnalyze = { vm.analyze(rec) },
           )
@@ -264,13 +265,11 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
       onDismissRequest = { showLogout = false },
       containerColor = Surface1,
       title = { Text("Cerrar sesión", color = TextPrimary) },
+      // S9: el usuario pidió que solo pregunte si está seguro — sin mencionar
+      // grabaciones, servidor o almacenamiento (eso "no está definido todavía").
       text = {
         Text(
-          buildString {
-            append("Vas a cerrar sesión en ")
-            append(vm.userEmail.ifBlank { "esta cuenta" })
-            append(".\n\nTus grabaciones se conservan en el servidor y volverán a verse al iniciar sesión en este teléfono.")
-          },
+          "Está seguro que desea salir?",
           color = TextSecondary,
           fontSize = 13.sp,
           lineHeight = 18.sp,
@@ -448,6 +447,7 @@ private fun RecordingCard(
   rec: RecordingDto,
   active: Boolean,
   busy: Boolean,
+  loading: Boolean,
   onClick: () -> Unit,
   onAnalyze: () -> Unit,
 ) {
@@ -466,21 +466,33 @@ private fun RecordingCard(
         fontWeight = FontWeight.SemiBold,
       )
       Spacer(Modifier.height(3.dp))
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(
-          rec.status.orEmpty(),
-          color = statusColor(rec.status),
-          fontSize = 11.sp,
-          fontWeight = FontWeight.Bold,
-        )
-        rec.error?.let { err ->
-          Spacer(Modifier.width(8.dp))
-          Text(err, color = Danger, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+      // S7: mientras resume no se muestra el estado crudo "summarizing";
+      // el único label visible es "Resumiendo…" de abajo.
+      if (rec.status != "summarizing") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Text(
+            rec.status.orEmpty(),
+            color = statusColor(rec.status),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+          )
+          rec.error?.let { err ->
+            Spacer(Modifier.width(8.dp))
+            Text(err, color = Danger, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+          }
         }
       }
       if (rec.status == "summarizing") {
         Text(
           "Resumiendo… puede tardar unos minutos",
+          color = Accent,
+          fontSize = 11.sp,
+          modifier = Modifier.padding(top = 4.dp),
+        )
+      }
+      if (loading) {
+        Text(
+          "Cargando nota…",
           color = Accent,
           fontSize = 11.sp,
           modifier = Modifier.padding(top = 4.dp),
