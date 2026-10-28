@@ -753,6 +753,9 @@ export default function App() {
   const [rec, setRec] = useState(false);
   // S3: toma en pausa (MediaRecorder.pause); el botón del header espejea el estado.
   const [recPaused, setRecPaused] = useState(false);
+  // S2/S4: diálogo de nombre — tras guardar una toma o al renombrar una nota.
+  const [rename, setRename] = useState<{ localId: string | null; serverId: string | null; suggested: string } | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [activeSeg, setActiveSeg] = useState<number>(-1);
   const [error, setError] = useState<string | null>(null);
@@ -892,6 +895,10 @@ export default function App() {
           await saveAudio(localId, blob);
           await saveLocalNote(note);
           await refreshLocals();
+          // S2: al terminar la toma se pide el nombre (título sugerido
+          // precargado). Cerrar sin guardar conserva el sugerido.
+          setRename({ localId, serverId: null, suggested: note.title });
+          setRenameDraft(note.title);
         } catch (e) {
           setError('No se pudo guardar la grabación en este dispositivo: ' + errText(e));
         }
@@ -922,6 +929,39 @@ export default function App() {
       setRecPaused(false);
     } catch (e) {
       setError('No se pudo reanudar la grabación: ' + errText(e));
+    }
+  };
+
+  /**
+   * S2/S4: confirma el nombre del diálogo. Local-only renombra la nota local;
+   * con serverId hace PATCH al servidor y sincroniza la copia local (S4).
+   */
+  const confirmRename = async () => {
+    if (!rename) return;
+    const target = rename;
+    const title = renameDraft.trim() || target.suggested;
+    try {
+      if (target.serverId) {
+        const r = await apiFetch(`/recordings/${target.serverId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title }),
+        });
+        if (!r.ok) throw new Error(await r.text() || `HTTP ${r.status}`);
+        const detail: Recording = await r.json();
+        await syncLocal(target.serverId, detail);
+        setSel((prev) => (prev && prev.serverId === target.serverId ? { ...prev, title: detail.title || title } : prev));
+      } else if (target.localId) {
+        const existing = await getLocalNote(target.localId);
+        if (existing && existing.title !== title) {
+          await saveLocalNote({ ...existing, title });
+        }
+      }
+      await load();
+    } catch (e) {
+      setError(errText(e, 'No se pudo guardar el nombre'));
+    } finally {
+      setRename(null);
     }
   };
 
@@ -1302,6 +1342,32 @@ export default function App() {
         />
         <button className="btn btn-secondary" onClick={load} disabled={busy}>Buscar</button>
       </div>
+
+      {/* S2/S4: diálogo de nombre (tras grabar o al renombrar). */}
+      {rename && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, width: 'min(420px, calc(100vw - 32px))' }}>
+            <h3 style={{ margin: '0 0 4px', color: 'var(--text)', fontSize: 17 }}>Guardar grabación</h3>
+            <p style={{ color: 'var(--text2)', fontSize: 13, margin: '0 0 12px' }}>
+              {rename.serverId ? 'Nuevo nombre de la nota.' : 'Poné un nombre a la nota. Podés cambiarlo después.'}
+            </p>
+            <input
+              autoFocus
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void confirmRename();
+                if (e.key === 'Escape') setRename(null);
+              }}
+              style={{ width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--text)', fontSize: 14, boxSizing: 'border-box' }}
+            />
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+              <button className="btn btn-secondary" onClick={() => setRename(null)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={() => void confirmRename()}>Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showSettings && (
         <div className="settings-panel">

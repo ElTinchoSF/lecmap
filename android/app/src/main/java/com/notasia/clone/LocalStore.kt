@@ -149,6 +149,12 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 1)
     writableDatabase.update(TABLE, v, "local_id = ?", arrayOf(localId))
   }
 
+  /** S2/S4: renombra la nota en la copia local. */
+  fun setTitle(localId: String, title: String) {
+    val v = ContentValues().apply { put("title", title) }
+    writableDatabase.update(TABLE, v, "local_id = ?", arrayOf(localId))
+  }
+
   /** Actualiza la copia local con la respuesta del servidor. */
   fun updateFromServer(serverId: String, dto: RecordingDto) {
     val note = findByServerId(serverId) ?: return

@@ -44,6 +44,13 @@ object RecordingState {
     internal set
 
   /**
+   * S2: título sugerido de la nota recién guardada. La UI lo consume al ver
+   * [savedLocalId] y abre el diálogo para que el usuario elija el nombre.
+   */
+  var pendingTitle by mutableStateOf<String?>(null)
+    internal set
+
+  /**
    * Ruta absoluta del `.m4a` en curso. Mientras existe, `LocalStore.recoverOrphans()`
    * la excluye: sin esto, cualquier `refresh()` a mitad de grabación trataba el
    * archivo como huérfano y creaba una nota fantasma antes de presionar Detener.
@@ -61,6 +68,12 @@ object RecordingState {
     val id = savedLocalId
     savedLocalId = null
     return id
+  }
+
+  fun consumePendingTitle(): String? {
+    val t = pendingTitle
+    pendingTitle = null
+    return t
   }
 }
 
@@ -284,6 +297,7 @@ class RecordingService : Service() {
       try {
         LocalStore(applicationContext).upsert(note)
         RecordingState.savedLocalId = localId
+        RecordingState.pendingTitle = title
         RecordingState.uploadError = null
       } catch (e: Exception) {
         RecordingState.uploadError = "No se pudo guardar la nota: ${e.message ?: "error"}"

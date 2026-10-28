@@ -278,6 +278,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     answer = ""
   }
 
+  /** S2: renombra la copia local de una nota recién guardada (sin servidor). */
+  fun renameLocal(localId: String, newTitle: String) {
+    viewModelScope.launch {
+      try {
+        withContext(Dispatchers.IO) { store.setTitle(localId, newTitle) }
+        refresh()
+      } catch (e: Exception) {
+        error = friendly(e)
+      }
+    }
+  }
+
   fun transcribe() {
     val rec = selected ?: return
     val serverId = rec.serverId

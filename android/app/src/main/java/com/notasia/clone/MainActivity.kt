@@ -97,8 +97,14 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
   val lifecycleOwner = LocalLifecycleOwner.current
   var question by remember { mutableStateOf("") }
   var showServer by remember { mutableStateOf(false) }
+
   var showLogout by remember { mutableStateOf(false) }
 
+  // S2: nombre de la nota recién guardada (también reusado por S4 para renombrar).
+  var showNamePrompt by remember { mutableStateOf(false) }
+  var nameDraft by remember { mutableStateOf("") }
+  var nameLocalId by remember { mutableStateOf<String?>(null) }
+  var nameSuggested by remember { mutableStateOf("") }
   // Al volver a la app, reintenta grabaciones que quedaron sin subir.
   DisposableEffect(lifecycleOwner) {
     val observer = LifecycleEventObserver { _, event ->
@@ -138,7 +144,17 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
 
   // El servicio guarda la nota local aunque la app esté en segundo plano.
   LaunchedEffect(RecordingState.savedLocalId) {
-    if (RecordingState.consumeSaved() != null) vm.refresh()
+    val id = RecordingState.consumeSaved() ?: return@LaunchedEffect
+    val suggested = RecordingState.consumePendingTitle()
+    vm.refresh()
+    // S2: al terminar la toma se pide el nombre. Si el diálogo se cierra sin
+    // guardar, la nota conserva el título sugerido (no se pierde la grabación).
+    if (suggested != null) {
+      nameLocalId = id
+      nameSuggested = suggested
+      nameDraft = suggested
+      showNamePrompt = true
+    }
   }
 
   LaunchedEffect(RecordingState.uploadError) {
@@ -293,6 +309,35 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
       },
       dismissButton = {
         TextButton(onClick = { showLogout = false }) { Text("Cancelar", color = TextSecondary) }
+      },
+    )
+  }
+
+  // S2: nombre editable al guardar la grabación (título sugerido pre-cargado).
+  if (showNamePrompt) {
+    AlertDialog(
+      onDismissRequest = { showNamePrompt = false },
+      containerColor = Surface1,
+      title = { Text("Guardar grabación", color = TextPrimary) },
+      text = {
+        OutlinedTextField(
+          value = nameDraft,
+          onValueChange = { nameDraft = it },
+          label = { Text("Nombre de la nota") },
+          singleLine = true,
+          modifier = Modifier.fillMaxWidth(),
+          colors = inputColors(),
+        )
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          val title = nameDraft.trim().ifBlank { nameSuggested }
+          nameLocalId?.let { vm.renameLocal(it, title) }
+          showNamePrompt = false
+        }) { Text("Guardar", color = Accent, fontWeight = FontWeight.Bold) }
+      },
+      dismissButton = {
+        TextButton(onClick = { showNamePrompt = false }) { Text("Cancelar", color = TextSecondary) }
       },
     )
   }
