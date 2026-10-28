@@ -28,7 +28,7 @@ Tercera etapa aparte. Corrección del usuario verbatim (L3): "lo que quería imp
 - T2 [S2] inline — jerarquía multi-pasada que reemplaza el slice de 7000 chars (backend). Estado: ✅ commits 6fc707a + fix 60b69af (RED observado export faltante → GREEN 11/11).
 - T3 [S3] inline — schema `sections[]` + prompt multi-layout + `normalizeMindmap` v2 con compat (backend). Estado: ✅ commit 39caeca (RED observado ERR_MODULE_NOT_FOUND → GREEN 21/21; módulo extraído a backend/src/mindmap.js).
 - T4 [S3] inline — render web multi-sección en `MindmapView`. Estado: ✅ commit d28d975 (sin test runner en web: verificado con tsc --noEmit + vite build verdes).
-- T5 [S3] inline — render Android multi-sección. Estado: pendiente.
+- T5 [S3] inline — render Android multi-sección. Estado: ✅ commit 77816b7 (RED observado compile error → GREEN testDebugUnitTest + assembleDebug; 7 tests nuevos en MindmapNormalizeTest.kt).
 - T6 [S1-S3] inline — verificación final: unit tests backend, gradle testDebugUnitTest + assembleDebug, tsc + vite build; E2E device opcional. Estado: pendiente.
 
 ## Log
@@ -57,4 +57,6 @@ L6 (2026-10-28): T3 implementado con test-first. El normalizador y el prompt del
 L7 (2026-10-28, decisión del usuario): chain strategy = **stacked-to-main** ("Cada PR apunta directo a main y se mergea en orden"). Aplica cuando haya entrega de PRs; push/PR sigue siendo decisión del usuario.
 
 L8 (2026-10-28): T4 implementado. El normalizador web (`web/src/App.tsx`) ahora expone `normalizeMindmap(mm): MindDocument | null` con `MindDocument = { title, sections: MindData[] }`: si el JSON trae `sections[]` (v2) normaliza cada sección con `normalizeSection` (mismo builders de antes); el formato viejo single-layout se envuelve como una única sección. `MindmapView` renderiza `doc.sections` en orden con `layoutBody(data)` (el switch de antes, extraído como función) y cada sección va envuelta en `.mm-section` (separador CSS espejo de `.mm-topic + .mm-topic` en App.css). Verificación: `npx tsc --noEmit` + `npx vite build` verdes (no hay test runner en web — excepción de test-first registrada). Commit: d28d975.
+
+L9 (2026-10-28): T5 implementado con test-first. `MindmapDto` ganó `sections: List<MindmapDto>?` (recursivo, compatible con Gson para notas viejas); nuevo `MindDocument(title, sections)`; `normalizeMindmap` ahora retorna `MindDocument?` (v2 itera secciones con `normalizeSection`, el viejo se envuelve en 1 sección); composable `MindmapSection` renderiza `doc.sections` con `LayoutBody(data)` (el when de antes) y divider entre secciones. Tests: `MindmapNormalizeTest.kt` (7 tests, RED = compile error por `sections` inexistente → GREEN). Commits: 77816b7. Entorno gradle verificado: sin wrapper — `JAVA_HOME=/opt/homebrew/opt/openjdk@17 ANDROID_HOME=/opt/homebrew/share/android-commandlinetools gradle -p android <task>`.
 
