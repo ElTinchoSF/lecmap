@@ -638,10 +638,12 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
 
 const summaryJobs = new Set();
 const MAX_CHUNK_CHARS = 10_000;
-// Presupuesto del material que llega al call final (~2500 tokens + prompt
-// ~800 + salida 4000 < 8000 TPM de Groq free). Si el material lo supera,
-// se condensa jerárquicamente en vez de truncarse.
-const FINAL_MATERIAL_MAX_CHARS = 10_000;
+// Presupuesto del material que llega al call final. paceChat rechaza pedidos
+// estimados en > 7000 tokens (TPM_BUDGET): con prompt del mindmap (~650) y
+// maxTokens 4000, al material le quedan ~2350 tokens ≈ 8200 chars; usamos
+// 7000 chars (~2000 tokens) con margen para el prompt multi-sección de S3.
+// Si el material lo supera, se condensa jerárquicamente en vez de truncarse.
+const FINAL_MATERIAL_MAX_CHARS = 7_000;
 
 function transcriptChunks(
   segments,
