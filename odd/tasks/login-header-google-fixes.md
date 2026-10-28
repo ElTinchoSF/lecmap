@@ -46,10 +46,10 @@ Aceptación:
 
 | ID | Specs | Route | Status | Commit |
 |----|-------|-------|--------|--------|
-| T1 | S1 | inline | pending | |
-| T2 | S2 (Android) | inline | pending | |
-| T3 | S2 (web) | inline | pending | |
-| T4 | S3 (código Android) | inline | pending | |
+| T1 | S1 | inline | ✅ done | dbc0c9a |
+| T2 | S2 (Android) | inline | ✅ done | (junto con T3) |
+| T3 | S2 (web) | inline | ✅ done | feat(ui): three-row header… |
+| T4 | S3 (código Android) | inline | ✅ done | feat(android): Continue with Google… |
 | T5 | S3 (config usuario — guía) | inline | blocked: usuario | |
 | T6 | builds + E2E + doc/assess | inline | pending | |
 
@@ -62,3 +62,17 @@ L1 (2026-10-28, verbatim — pedido original): "bien, vamos a ver algunas cosas:
 Empecemos por esas cosas, siempre pregunta lo que necesites antes de realizar cambios, y en el caso de que no tengas preguntas, informa que no las tienes y pide confirmación para proseguir. Toma esto como metodología de trabajo global y anótalo en memoria persistente."
 
 L2 (2026-10-28, confirmaciones vía question): Item 1 = "Sólo el parpadeo" (diagnóstico (b) no observado; guard preventivo por exigencia del punto); Item 2 = "Android y web" con diseño de 3 filas propuesto; Item 3 = "Guío paso a paso". Luego: "perfecto, seguimos ese orden".
+
+L3 (2026-10-28, causa raíz del parpadeo — verificada en código y device):
+- GoTrue sólo acepta **JSON** en `POST /auth/v1/token?grant_type=refresh_token`; la app mandaba form-urlencoded (`@FormUrlEncoded`) → 400 `bad_json` → el refresh NUNCA funcionaba → 401 no refresqueable → logout con parpadeo. Fix: `RefreshReq` + `@Body` en `SupabaseAuth.kt`.
+- Race de refresh doble: `refresh()` corría 2 veces (LaunchedEffect + ON_RESUME) con refresh token rotativo → el segundo refresh invalidaba el primero → sesión muerta al abrir. Fix: anti-reentrancia con coalescing (`refreshInFlight`/`refreshQueued`) en `AppViewModel.kt`.
+- `AuthError` ahora mapea `msg`/`error_code` (GoTrue devuelve `{code,error_code,msg}`); antes mostraba "Error de autenticación" sin diagnóstico.
+- init ya no lanza `tryRefreshToken()` paralelo: un SOLO camino de validación (`refresh()`), con logs `SessionFlow` en los 8 puntos del flujo.
+
+L4 (2026-10-28, evidencia E2E en device — WiFi adb-130303752L001050):
+- ✅ Recovery 401 → refresh OK → app sin Login: logs `init: stored tokens → validation via refresh()` → `refresh(): 401 from list → tryRefreshToken…` → `tryRefreshToken OK`, UN solo refresh.
+- ✅ Header: marca en [48,156] idle y grabando en la MISMA posición (cero desplazamiento); `Salir` ausente grabando; desc=`Pausar grabación` en [611,393][683,465].
+- ✅ Pausa↔reanudar alterna `Reanudar grabación`↔`Pausar grabación`; diálogo S2 "Guardar grabación" ("Nota 28/10 00:25", Cancelar/Guardar) → Cancelar → `Salir` vuelve.
+- ✅ Logout con diálogo "Cerrar sesión/Está seguro que desea salir?" → Login.
+- ✅ T4: ícono G multicolor renderizado; click en "Continuar con Google" abre Chrome en `…wglycndzgxgjtplwrcyq.supabase.co` con `{"code":400,"error_code":"validation_failed","msg":"Unsupported provider: provider is not enabled"}` → wiring app→navegador→authorize verificado; el único bloqueo es la config externa (T5).
+- ⚠️ Web observado: el auth gate de `web/src/App.tsx:1302` tiene el mismo patrón de flash que Android (fuera de alcance de S1, que es Android) — reportar al usuario.
