@@ -21,6 +21,7 @@ import {
   resetInterrupted,
   deleteRecording,
 } from './db.js';
+import { targetSummarySentences, transcriptDurationSeconds, condenseToFit } from './summary.js';
 
 const app = Fastify({ logger: true });
 const defaultOrigins = [
@@ -637,6 +638,12 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
 
 const summaryJobs = new Set();
 const MAX_CHUNK_CHARS = 10_000;
+// Presupuesto del material que llega al call final. paceChat rechaza pedidos
+// estimados en > 7000 tokens (TPM_BUDGET): con prompt del mindmap (~650) y
+// maxTokens 4000, al material le quedan ~2350 tokens ≈ 8200 chars; usamos
+// 7000 chars (~2000 tokens) con margen para el prompt multi-sección de S3.
+// Si el material lo supera, se condensa jerárquicamente en vez de truncarse.
+const FINAL_MATERIAL_MAX_CHARS = 7_000;
 
 function transcriptChunks(
   segments,
@@ -702,7 +709,18 @@ async function summarizeChunkSafe(chunk, index, total, depth = 0) {
   }
 }
 
-function mindmapSystemPrompt(template) {
+const MERGE_SYSTEM_PROMPT =
+  'Sos un asistente que condensa resúmenes de fragmentos de una clase. Reescribí un texto compacto en español que conserve TODOS los hechos, definiciones, fórmulas, ejemplos, nombres y conclusiones de los fragmentos, sin inventar nada y sin repetirte. Sin encabezados ni preámbulo: sólo el contenido condensado.';
+
+async function condensePartsChunk(text, index, total) {
+  const raw = await openaiChat([
+    { role: 'system', content: MERGE_SYSTEM_PROMPT },
+    { role: 'user', content: `Parte ${index + 1} de ${total}:\n\n${text}` },
+  ], { maxTokens: 900 });
+  return String(raw || '').trim() || text;
+}
+
+function mindmapSystemPrompt(template, targetSentences) {
   return `Eres un experto que convierte transcripciones en mapas de ideas de estudio en español. Template: ${template}. `
     + 'Responde SOLO JSON con esta forma exacta: '
     + '{'
@@ -735,7 +753,8 @@ function mindmapSystemPrompt(template) {
     + 'Reglas de contenido: label/term/label de paso/evento/etiqueta corto (2 a 5 palabras); detail o definition una o dos frases con el contenido real de la transcripción; points/effects/solutions viñetas concretas (datos, sub-ideas, fórmulas, ejemplos); para comparison, cada item con sus values en el mismo orden que dimensions; para timeline usá "date" con el año, década o momento mencionado. '
     + 'Organizá por relación de ideas; solo usá orden cronológico cuando elijas "timeline" o "steps". No menciones minutos de la grabación. '
     + 'No repitas ideas y no inventes contenido ausente. '
-    + 'El summary debe ser un resumen de estudio de 3 a 6 frases.';
+    + 'El summary debe ser un resumen de estudio de aproximadamente ' + targetSentences
+    + ' frases; priorizá cubrir todas las ideas principales antes que acortar.';
 }
 
 async function runSummaryJob(id, userId, template) {
@@ -754,12 +773,22 @@ async function runSummaryJob(id, userId, template) {
         );
       }
     }
-    let material = parts.join('\n\n');
-    // Último resguardo para clases muy largas: el pedido final debe entrar en TPM.
-    if (material.length > 7000) material = material.slice(0, 7000);
+    // Condensación jerárquica: ninguna parte se descarta. Si el material
+    // supera el presupuesto del call final, condensamos lotes y volvemos a
+    // intentar — el final de la clase siempre llega al modelo.
+    const { material, rounds } = await condenseToFit(
+      parts,
+      condensePartsChunk,
+      FINAL_MATERIAL_MAX_CHARS,
+    );
+    if (rounds > 0) console.log(`[summarize] ${id}: material condensado en ${rounds} ronda(s)`);
+
+    const minutes = transcriptDurationSeconds(r.transcript) / 60;
+    const targetSentences = targetSummarySentences(minutes);
+    console.log(`[summarize] ${id}: ${minutes.toFixed(1)} min → objetivo ${targetSentences} frases`);
 
     const messages = [
-      { role: 'system', content: mindmapSystemPrompt(template) },
+      { role: 'system', content: mindmapSystemPrompt(template, targetSentences) },
       { role: 'user', content: material },
     ];
 
