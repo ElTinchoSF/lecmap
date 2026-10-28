@@ -50,8 +50,8 @@ Aceptación:
 | T2 | S2 (Android) | inline | ✅ done | (junto con T3) |
 | T3 | S2 (web) | inline | ✅ done | feat(ui): three-row header… |
 | T4 | S3 (código Android) | inline | ✅ done | feat(android): Continue with Google… |
-| T5 | S3 (config usuario — guía) | inline | blocked: usuario | |
-| T6 | builds + E2E + doc/assess | inline | pending | |
+| T5 | S3 (config usuario — guía) | inline | 📤 guía entregada — blocked: config del usuario | |
+| T6 | builds + E2E + doc/assess | inline | ✅ done | f509f05 |
 
 ## Log
 
@@ -76,3 +76,11 @@ L4 (2026-10-28, evidencia E2E en device — WiFi adb-130303752L001050):
 - ✅ Logout con diálogo "Cerrar sesión/Está seguro que desea salir?" → Login.
 - ✅ T4: ícono G multicolor renderizado; click en "Continuar con Google" abre Chrome en `…wglycndzgxgjtplwrcyq.supabase.co` con `{"code":400,"error_code":"validation_failed","msg":"Unsupported provider: provider is not enabled"}` → wiring app→navegador→authorize verificado; el único bloqueo es la config externa (T5).
 - ⚠️ Web observado: el auth gate de `web/src/App.tsx:1302` tiene el mismo patrón de flash que Android (fuera de alcance de S1, que es Android) — reportar al usuario.
+
+L5 (2026-10-28, cierre T6):
+- Fix commiteado `f2ff98f` (JSON refresh + coalescing + logs) y doc `f509f05`.
+- E2E de login con credenciales tras logout: formulario completo + "Iniciar sesión" → app ✓ (fresh sign-in, sin refresh en vuelo).
+- Limpieza del device: nota de prueba `local_1793157922018` borrada de `local_notes` (DB local vía run-as cat/push, integrity_check OK), audio `nota_1793157922018.m4a` y `notas_ia.xml.bak` eliminados; el server nunca la tuvo (verificado con GET /recordings con el token del device: sólo `caku8ctm` + `dakauszz`).
+- Cold start final: splash → app directo (sesión válida), lista con sólo las 2 notas reales del usuario.
+- Asses sobre `cc9b8bc..f509f05`: `risk: medium`, `review_due: false` (`under_budget`, reason `executable_change` en AndroidManifest) → sin review ceremony; registrar tier medium/under_budget.
+- Guía de config (T5) entregada al usuario en el chat: Google Cloud OAuth Client + provider Google en Supabase + Redirect URLs (`https://lecmap.app`, `com.notasia.clone://login-callback`, callback `https://wglycndzgxgjtplwrcyq.supabase.co/auth/v1/callback`).
