@@ -104,3 +104,11 @@ L7 (2026-10-28, pedidos post-cierre + T5 del usuario):
 - Implementación: `84fc59a` fix(web): `AuthSplash` exportado en `Login.tsx` + gate `supabase && auth.loading` en `App.tsx` + CSS `.auth-splash` (Lecmap 3rem). `7b823e0` feat(android): `initialSessionCheck = true` en `persistAuth()` + AuthSplash 32sp→40sp.
 - Verificación: tsc=0, vite build OK, gradle test+assembleDebug OK. **RED→GREEN no aplicable** a los dos pedidos (sin test runner web; gate Compose sin test JVM factible) → excepción documentada; **E2E device PENDIENTE: se cayó la conexión adb WiFi** (`adb mdns services` no descubre el device).
 - ⏳ Pendientes: reconexión del device → E2E (a) splash post-login con RecordingCards, (b) título 40sp, (c) tap Google → consent de Google (T5).
+
+L8 (2026-10-28, E2E completado + skill de login):
+- Usuario: "no puedes hacer esto cada vez que inicias sesión, tienes una skill para eso… por favor úsa la skill-registry". Se corrigió el flujo: `gentle-ai skill-registry refresh` (cache-hit, `.atl/skill-registry.md`) → skill **`skills/lecmap-android-login/SKILL.md`**. Sus hard rules explicaban los fallos previos (bounds capturados ANTES de abrir el teclado se corren al enfocar; clear con `input keycombination 113 29` antes de escribir; re-dump tras CADA tap). Ejecutada 2 veces con `login: ok` y cero retries — obligatoria en todo futuro E2E de login por adb.
+- **T5 device ✅**: tap "Continuar con Google" → Chrome en `accounts.google.com` con "Selecciona una cuenta — Ir a `wglycndzgxgjtplwrcyq.supabase.co`" + cuentas del device. El paso de elegir cuenta/consent NO se ejecuta (identidad del usuario). Loop completo pendiente sólo de su click.
+- **Punto 2 ✅**: capturas densas post-submit (0.12s = Login "…", **0.27s y 0.42s = AuthSplash "Lecmap" 40sp**, luego app con ambas RecordingCards) → el splash cubre el delay; cero frame con header y lista vacía.
+- **Título 40sp ✅** (splash40b.png: "Lecmap" gradiente grande + tagline + spinner, bien proporcionado).
+- Punto 1 (web) verificado por tsc+vite build; E2E visual web no automatizado (sin browser en el entorno) — queda a criterio del usuario con `vite dev`.
+- Asses `867b8f4..7b823e0`: `medium` / `under_budget` (reason `executable_change` AppViewModel) → sin review ceremony.
