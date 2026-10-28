@@ -40,17 +40,29 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun MindmapSection(raw: MindmapDto?) {
-  val data = remember(raw) { normalizeMindmap(raw) } ?: return
+  val doc = remember(raw) { normalizeMindmap(raw) } ?: return
   Column(Modifier.fillMaxWidth()) {
-    when (data.layout) {
-      MindLayout.COMPARISON -> ComparisonView(data)
-      MindLayout.STEPS -> StepsView(data)
-      MindLayout.TIMELINE -> TimelineView(data)
-      MindLayout.GLOSSARY -> GlossaryView(data)
-      MindLayout.CAUSE -> CauseView(data)
-      MindLayout.SOLUTION -> SolutionView(data)
-      MindLayout.TOPICS -> TopicsView(data)
+    doc.sections.forEachIndexed { i, data ->
+      if (i > 0) {
+        Spacer(Modifier.height(18.dp))
+        HorizontalDivider(color = BorderCol, thickness = 1.dp)
+        Spacer(Modifier.height(16.dp))
+      }
+      LayoutBody(data)
     }
+  }
+}
+
+@Composable
+private fun LayoutBody(data: MindData) {
+  when (data.layout) {
+    MindLayout.COMPARISON -> ComparisonView(data)
+    MindLayout.STEPS -> StepsView(data)
+    MindLayout.TIMELINE -> TimelineView(data)
+    MindLayout.GLOSSARY -> GlossaryView(data)
+    MindLayout.CAUSE -> CauseView(data)
+    MindLayout.SOLUTION -> SolutionView(data)
+    MindLayout.TOPICS -> TopicsView(data)
   }
 }
 

@@ -459,6 +459,12 @@ body {
   border-top: 1px dashed var(--border);
 }
 
+.mm-section + .mm-section {
+  margin-top: 28px;
+  padding-top: 26px;
+  border-top: 1px dashed var(--border);
+}
+
 .mm-tree {
   display: grid;
   grid-template-columns: minmax(150px, 210px) 30px 1fr;
