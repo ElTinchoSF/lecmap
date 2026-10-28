@@ -11,11 +11,30 @@ import {
 } from './local';
 import type { LocalNote } from './local';
 import { useAuth } from './auth';
-import { LoginScreen } from './Login';
+import { LoginScreen, AuthSplash } from './Login';
 import { supabase } from './supabase';
 import './App.css';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// S2 (fila 3): "Cambiar servidor" persiste un override en localStorage con
+// prioridad sobre el valor de build; se vuelve a leer en cada carga de página.
+function readApiOverride(): string | null {
+  try {
+    return localStorage.getItem('lecmap_api_url');
+  } catch {
+    return null;
+  }
+}
+
+function writeApiOverride(url: string | null): void {
+  try {
+    if (url === null) localStorage.removeItem('lecmap_api_url');
+    else localStorage.setItem('lecmap_api_url', url);
+  } catch {
+    // sin storage (modo privado): la sesión de settings se cierra igual
+  }
+}
+
+const API = readApiOverride() || import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 /** Obtiene el access token de Supabase para las llamadas al backend. */
 async function getAccessToken(): Promise<string> {
@@ -742,7 +761,9 @@ export default function App() {
   const [serverNotes, setServerNotes] = useState<Recording[]>([]);
   const [locals, setLocals] = useState<LocalNote[]>([]);
   const [serverOk, setServerOk] = useState(true);
-  const [showSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  // S2 (fila 3): borrador del input de "Cambiar servidor".
+  const [apiDraft, setApiDraft] = useState(API);
   const [exportTimes, setExportTimes] = useState(true);
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
@@ -1298,8 +1319,12 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  // Auth gate: si Supabase está configurado y no hay sesión, mostrar login.
-  if (supabase && !auth.loading && !auth.session) {
+  // S1: splash mientras se resuelve la sesión — la app nunca se pinta antes
+  // que Login (mismo gate que Android: sin parpadeo del contenido principal).
+  if (supabase && auth.loading) {
+    return <AuthSplash />;
+  }
+  if (supabase && !auth.session) {
     return <LoginScreen auth={auth} />;
   }
 
@@ -1317,20 +1342,45 @@ export default function App() {
           <h1>Lecmap</h1>
           <p className="tagline">Tus clases, en un mapa</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {auth.session && (
+        {/* S2: fila de botones propia — con toma activa Salir queda oculto (no
+            tiene sentido salir en una grabación) y la pausa es SÓLO ícono,
+            con ancho fijo: el header no se desplaza entre estados. */}
+        <div className="header-actions">
+          {auth.session && !rec && (
             <button className="btn btn-secondary" onClick={() => auth.signOut()} title="Cerrar sesión">Salir</button>
           )}
-          {/* S3: Pausar/Reanudar junto a Detener mientras hay toma activa. */}
           {rec && (
-            <button className="btn btn-secondary" onClick={recPaused ? resumeRec : pauseRec} disabled={busy}>
-              {recPaused ? '▶ Reanudar' : '⏸ Pausar'}
+            <button
+              className="btn btn-secondary btn-icon"
+              onClick={recPaused ? resumeRec : pauseRec}
+              disabled={busy}
+              title={recPaused ? 'Reanudar' : 'Pausar'}
+              aria-label={recPaused ? 'Reanudar grabación' : 'Pausar grabación'}
+            >
+              {recPaused ? '▶' : '⏸'}
             </button>
           )}
           <button className={`btn ${rec ? 'btn-recording' : 'btn-primary'}`} onClick={toggleRec} disabled={busy}>
             {rec ? '■ Detener' : '● Grabar'}
           </button>
         </div>
+        {/* S2 fila 3: email/servidor + Cambiar servidor (espejo de Android). */}
+        {auth.session && (
+          <div className="header-meta">
+            <span className="header-meta-info" title={API}>
+              {auth.session.user?.email || API}
+            </span>
+            <button
+              className="header-meta-link"
+              onClick={() => {
+                setApiDraft(API);
+                setShowSettings((v) => !v);
+              }}
+            >
+              Cambiar servidor
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="toolbar">
@@ -1375,7 +1425,32 @@ export default function App() {
         <div className="settings-panel">
           <div className="settings-row">
             <span className="settings-label">API</span>
-            <code className="settings-url">{API}</code>
+            <input
+              className="settings-input"
+              value={apiDraft}
+              onChange={(e) => setApiDraft(e.target.value)}
+              placeholder="https://api.ejemplo.com"
+              aria-label="URL del servidor"
+            />
+            <button
+              className="btn btn-primary"
+              disabled={!apiDraft.trim() || apiDraft.trim() === API}
+              onClick={() => {
+                writeApiOverride(apiDraft.trim());
+                window.location.reload();
+              }}
+            >
+              Guardar
+            </button>
+            <button
+              className="btn btn-secondary"
+              onClick={() => {
+                writeApiOverride(null);
+                window.location.reload();
+              }}
+            >
+              Restablecer
+            </button>
           </div>
           <p className="settings-help">
             Autenticación vía Supabase. Sesión: {auth.session?.user?.email ?? '—'}.

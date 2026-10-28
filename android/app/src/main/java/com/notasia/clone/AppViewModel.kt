@@ -2,6 +2,8 @@ package com.notasia.clone
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -33,6 +35,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   var authError by mutableStateOf<String?>(null)
     private set
 
+  // S1: true mientras se valida la sesión guardada en el arranque; el gate
+  // muestra el splash (nunca la app) hasta que refresh() resuelva.
+  var initialSessionCheck by mutableStateOf(false)
+    private set
+
   private var accessToken = prefs.getString("auth_access_token", "") ?: ""
   private var refreshToken = prefs.getString("auth_refresh_token", "") ?: ""
 
@@ -44,14 +51,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     if (sbUrl.isNotEmpty() && sbKey.isNotEmpty()) {
       SupabaseAuth.config = SupabaseConfig(sbUrl, sbKey)
     }
-    // Si hay tokens guardados, restaurar sesión.
     if (accessToken.isNotEmpty()) {
-      isLoggedIn = true
+      // S1: no se asume la sesión abierta: el splash cubre hasta que refresh()
+      // confirme si el token sigue vivo (si no, Login antes que la app).
+      // Un SOLO camino de refresh: refresh() valida y rota en 401. Antes aquí
+      // corría otro tryRefreshToken() en paralelo y el doble uso del refresh
+      // token rotativo hacía fallar la validación → logout sin sesión muerta.
+      initialSessionCheck = true
       Net.apiToken = accessToken
-      // Intentar refresh en background para mantener la sesión válida.
-      viewModelScope.launch { tryRefreshToken() }
+      android.util.Log.d("SessionFlow", "init: stored tokens → validation via refresh()")
     } else {
       Net.apiToken = ""
+      android.util.Log.d("SessionFlow", "init: no stored tokens → Login first")
     }
     authLoading = false
   }
@@ -141,6 +152,82 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
   }
 
+  /**
+   * S3: Continuar con Google — abre el authorize de Supabase en el navegador
+   * con flujo PKCE. El callback vuelve por deep link
+   * (com.notasia.clone://login-callback) a handleOAuthCallback().
+   */
+  fun signInWithGoogle() {
+    val cfg = SupabaseAuth.config ?: run {
+      authError = "Supabase no configurado"
+      return
+    }
+    authError = null
+    val verifier = randomCodeVerifier()
+    prefs.edit().putString("pkce_verifier", verifier).apply()
+    val base = if (cfg.url.endsWith("/")) cfg.url.dropLast(1) else cfg.url
+    val redirect = "com.notasia.clone://login-callback"
+    val url = "$base/auth/v1/authorize" +
+      "?provider=google" +
+      "&redirect_to=${Uri.encode(redirect)}" +
+      "&code_challenge=${Uri.encode(codeChallengeS256(verifier))}" +
+      "&code_challenge_method=s256"
+    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+      .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try {
+      getApplication<Application>().startActivity(intent)
+    } catch (_: Exception) {
+      authError = "No se pudo abrir el navegador"
+    }
+  }
+
+  /**
+   * S3: cierra el OAuth de Google — intercambia el `code` del callback por la
+   * sesión (PKCE), o expone el error/cancelación en la pantalla de login.
+   */
+  fun handleOAuthCallback(code: String?, error: String?) {
+    if (code == null) {
+      authError = error ?: "Login con Google cancelado"
+      return
+    }
+    val verifier = prefs.getString("pkce_verifier", "") ?: ""
+    if (verifier.isEmpty()) {
+      authError = "Sesión de Google inválida — probá de nuevo"
+      return
+    }
+    viewModelScope.launch {
+      authLoading = true
+      try {
+        val res = withContext(Dispatchers.IO) {
+          SupabaseAuth.pkceExchange(code, verifier)
+        }
+        prefs.edit().remove("pkce_verifier").apply()
+        persistAuth(res)
+      } catch (e: Exception) {
+        authError = e.message ?: "No se pudo completar el login con Google"
+      } finally {
+        authLoading = false
+      }
+    }
+  }
+
+  private fun randomCodeVerifier(): String {
+    val bytes = ByteArray(64).also { java.security.SecureRandom().nextBytes(it) }
+    return android.util.Base64.encodeToString(
+      bytes,
+      android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING,
+    )
+  }
+
+  private fun codeChallengeS256(verifier: String): String {
+    val digest = java.security.MessageDigest.getInstance("SHA256")
+      .digest(verifier.toByteArray(Charsets.US_ASCII))
+    return android.util.Base64.encodeToString(
+      digest,
+      android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING,
+    )
+  }
+
   fun signOut() {
     viewModelScope.launch {
       val token = accessToken
@@ -181,6 +268,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       .putString("auth_refresh_token", refreshToken)
       .putString("auth_email", userEmail)
       .apply()
+    // Punto 2: tras cualquier login (email o Google) el AuthSplash cubre el
+    // delay hasta que refresh() cargue las RecordingCards — persistAuth ya
+    // dispara refresh() abajo, y su finally baja esta bandera.
+    initialSessionCheck = true
     refresh()
   }
 
@@ -197,17 +288,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         .putString("auth_access_token", accessToken)
         .putString("auth_refresh_token", refreshToken)
         .apply()
+      android.util.Log.d("SessionFlow", "tryRefreshToken OK")
       true
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      android.util.Log.d("SessionFlow", "tryRefreshToken FAILED: ${e.message}")
       false
     }
   }
 
+  private var refreshInFlight = false
+  private var refreshQueued = false
+
   /**
    * Lista las notas locales y las del servidor. La copia local es la fuente
    * para el audio; el servidor aporta transcripción, resumen y mapa.
+   * Anti-reentrancia (S1): al abrir se dispara dos veces (LaunchedEffect +
+   * ON_RESUME); con refresh token rotativo, dos refresh concurrentes hacen
+   * fallar la validación y cerrar la sesión sin que esté muerta. Si hay uno
+   * en vuelo, se encola UNO solo que corre al terminar.
    */
   fun refresh() {
+    if (refreshInFlight) {
+      refreshQueued = true
+      return
+    }
+    refreshInFlight = true
     viewModelScope.launch {
       // .m4a huérfanos (proceso muerto a mitad de grabación) vuelven como notas.
       withContext(Dispatchers.IO) { store.recoverOrphans() }
@@ -219,12 +324,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, server)
         error = null
+        // S1: una lista del servidor con el token guardado valida la sesión.
+        if (accessToken.isNotEmpty()) isLoggedIn = true
       } catch (e: Exception) {
         val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, emptyList())
         if (e is HttpException && e.code() == 401) {
           // Token expirado: intentar refresh y reintentar una vez.
+          android.util.Log.d("SessionFlow", "refresh(): 401 from list → tryRefreshToken…")
           val refreshed = tryRefreshToken()
+          android.util.Log.d("SessionFlow", "refresh(): tryRefreshToken=$refreshed")
           if (refreshed) {
             try {
               val server = withContext(Dispatchers.IO) { api.list(query).items }
@@ -234,14 +343,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
               val locals2 = withContext(Dispatchers.IO) { store.list() }
               list = merge(locals2, server)
               error = null
+              // S1: el refresh del token revalida la sesión.
+              if (accessToken.isNotEmpty()) isLoggedIn = true
               return@launch
             } catch (_: Exception) { /* cae al error de abajo */ }
           }
-          // Sesión inválida: volver al login.
-          isLoggedIn = false
-          Net.apiToken = ""
-        } else if (locals.isEmpty()) {
-          error = friendly(e)
+          // Sesión inválida: volver al login. S1: nunca con grabación activa —
+          // si al terminar la toma sigue inválida, el refresh post-grabación
+          // (savedLocalId) la cierra recién ahí.
+          if (!RecordingState.isRecording && !RecordingState.isPaused) {
+            android.util.Log.d("SessionFlow", "refresh(): session invalid → Login")
+            isLoggedIn = false
+            Net.apiToken = ""
+          } else {
+            android.util.Log.d("SessionFlow", "refresh(): 401 but recording → session kept open")
+          }
+        } else {
+          // S1: sin red u otro error no invalida la sesión guardada.
+          if (accessToken.isNotEmpty()) isLoggedIn = true
+          if (locals.isEmpty()) error = friendly(e)
+        }
+      } finally {
+        // S1: el splash termina con la primera resolución de refresh().
+        if (initialSessionCheck) initialSessionCheck = false
+        refreshInFlight = false
+        if (refreshQueued) {
+          refreshQueued = false
+          refresh()
         }
       }
     }

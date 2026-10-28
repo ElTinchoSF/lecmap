@@ -1,6 +1,20 @@
 import { useState } from 'react';
 import type { AuthState } from './auth';
 
+/**
+ * S1 (espejo de Android): splash con la marca mientras se resuelve la sesión.
+ * Cubre el parpadeo de "app pintada antes que Login" mientras `auth.loading`.
+ */
+export function AuthSplash() {
+  return (
+    <div className="auth-splash" role="status" aria-label="Cargando sesión">
+      <span className="auth-splash-title">Lecmap</span>
+      <span className="auth-splash-subtitle">Tus clases, en un mapa</span>
+      <span className="auth-splash-spinner" aria-hidden="true" />
+    </div>
+  );
+}
+
 export function LoginScreen({ auth }: { auth: AuthState }) {
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
