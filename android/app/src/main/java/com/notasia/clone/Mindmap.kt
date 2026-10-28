@@ -70,6 +70,7 @@ data class MindNodeDto(
 data class MindmapDto(
   val title: String? = null,
   val layout: String? = null,
+  val sections: List<MindmapDto>? = null,
   val topics: List<MindTopicDto>? = null,
   val dimensions: List<String>? = null,
   val items: List<MindItemDto>? = null,
@@ -116,6 +117,10 @@ data class MindData(
   val causes: List<MindCause> = emptyList(),
   val problems: List<MindProblem> = emptyList(),
 )
+
+// Documento v2: un mindmap puede traer varias secciones (un layout por tema
+// central). El formato viejo single-layout se normaliza como una sola sección.
+data class MindDocument(val title: String, val sections: List<MindData>)
 
 private fun text(v: String?): String = v?.trim().orEmpty()
 private fun texts(v: List<String>?): List<String> =
@@ -214,8 +219,7 @@ private fun buildTopics(mm: MindmapDto, fallback: String): List<MindTopic> {
  * Elige el layout pedido por la IA; si no trae datos válidos prueba los demás
  * y, como último recurso, cae al mapa de temas. Misma lógica que web/backend.
  */
-fun normalizeMindmap(mm: MindmapDto?): MindData? {
-  if (mm == null) return null
+private fun normalizeSection(mm: MindmapDto): MindData? {
   val title = text(mm.title)
 
   val requested = when (mm.layout) {
@@ -314,4 +318,20 @@ fun normalizeMindmap(mm: MindmapDto?): MindData? {
     if (data != null) return data
   }
   return null
+}
+
+/**
+ * Formato v2: { title, sections: [...] } — un layout por tema central.
+ * Formato viejo single-layout se envuelve como una sola sección.
+ */
+fun normalizeMindmap(mm: MindmapDto?): MindDocument? {
+  if (mm == null) return null
+  val sections = mm.sections
+  if (sections != null) {
+    val normalized = sections.mapNotNull { s -> normalizeSection(s) }
+    if (normalized.isEmpty()) return null
+    return MindDocument(text(mm.title).ifEmpty { normalized.first().title }, normalized)
+  }
+  val data = normalizeSection(mm) ?: return null
+  return MindDocument(data.title, listOf(data))
 }
