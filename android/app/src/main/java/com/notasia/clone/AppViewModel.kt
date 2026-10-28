@@ -33,6 +33,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   var authError by mutableStateOf<String?>(null)
     private set
 
+  // S1: true mientras se valida la sesión guardada en el arranque; el gate
+  // muestra el splash (nunca la app) hasta que refresh() resuelva.
+  var initialSessionCheck by mutableStateOf(false)
+    private set
+
   private var accessToken = prefs.getString("auth_access_token", "") ?: ""
   private var refreshToken = prefs.getString("auth_refresh_token", "") ?: ""
 
@@ -44,9 +49,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     if (sbUrl.isNotEmpty() && sbKey.isNotEmpty()) {
       SupabaseAuth.config = SupabaseConfig(sbUrl, sbKey)
     }
-    // Si hay tokens guardados, restaurar sesión.
     if (accessToken.isNotEmpty()) {
-      isLoggedIn = true
+      // S1: no se asume la sesión abierta: el splash cubre hasta que refresh()
+      // confirme si el token sigue vivo (si no, Login antes que la app).
+      initialSessionCheck = true
       Net.apiToken = accessToken
       // Intentar refresh en background para mantener la sesión válida.
       viewModelScope.launch { tryRefreshToken() }
@@ -219,6 +225,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, server)
         error = null
+        // S1: una lista del servidor con el token guardado valida la sesión.
+        if (accessToken.isNotEmpty()) isLoggedIn = true
       } catch (e: Exception) {
         val locals = withContext(Dispatchers.IO) { store.list() }
         list = merge(locals, emptyList())
@@ -234,15 +242,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
               val locals2 = withContext(Dispatchers.IO) { store.list() }
               list = merge(locals2, server)
               error = null
+              // S1: el refresh del token revalida la sesión.
+              if (accessToken.isNotEmpty()) isLoggedIn = true
               return@launch
             } catch (_: Exception) { /* cae al error de abajo */ }
           }
-          // Sesión inválida: volver al login.
-          isLoggedIn = false
-          Net.apiToken = ""
-        } else if (locals.isEmpty()) {
-          error = friendly(e)
+          // Sesión inválida: volver al login. S1: nunca con grabación activa —
+          // si al terminar la toma sigue inválida, el refresh post-grabación
+          // (savedLocalId) la cierra recién ahí.
+          if (!RecordingState.isRecording && !RecordingState.isPaused) {
+            isLoggedIn = false
+            Net.apiToken = ""
+          }
+        } else {
+          // S1: sin red u otro error no invalida la sesión guardada.
+          if (accessToken.isNotEmpty()) isLoggedIn = true
+          if (locals.isEmpty()) error = friendly(e)
         }
+      } finally {
+        // S1: el splash termina con la primera resolución de refresh().
+        if (initialSessionCheck) initialSessionCheck = false
       }
     }
   }

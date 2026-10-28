@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -36,6 +37,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
@@ -91,6 +93,29 @@ private fun startRecordingService(context: Context) {
   ContextCompat.startForegroundService(context, intent)
 }
 
+/** S1: splash de sesión — la app nunca se pinta antes que el Login. */
+@Composable
+private fun AuthSplash() {
+  Column(
+    modifier = Modifier.fillMaxSize(),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center,
+  ) {
+    Text(
+      text = "Lecmap",
+      style = TextStyle(
+        brush = Brush.linearGradient(AccentGradient),
+        fontWeight = FontWeight.Bold,
+        fontSize = 32.sp,
+      ),
+    )
+    Spacer(Modifier.height(4.dp))
+    Text("Tus clases, en un mapa", color = TextSecondary, fontSize = 14.sp)
+    Spacer(Modifier.height(24.dp))
+    CircularProgressIndicator(color = Accent, modifier = Modifier.size(28.dp))
+  }
+}
+
 @Composable
 fun AppScreen(vm: AppViewModel = viewModel()) {
   val context = LocalContext.current
@@ -137,8 +162,18 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
     vm.refresh()
   }
 
-  // Auth gate: si Supabase está configurado y no hay sesión, mostrar login.
-  if (SupabaseAuth.config != null && !vm.authLoading && !vm.isLoggedIn) {
+  // S1: splash mientras se valida la sesión guardada — la app nunca se pinta
+  // antes que Login (sin parpadeo del contenido principal).
+  if (SupabaseAuth.config != null && vm.initialSessionCheck) {
+    AuthSplash()
+    return
+  }
+  // Auth gate: con Supabase configurado y sin sesión, Login primero. S1: con
+  // grabación activa NO se navega al login (la sesión no se cierra en una
+  // toma); si al terminar sigue inválida, aparece el Login recién ahí.
+  if (SupabaseAuth.config != null && !vm.isLoggedIn &&
+    !RecordingState.isRecording && !RecordingState.isPaused
+  ) {
     LoginScreen(vm)
     return
   }
