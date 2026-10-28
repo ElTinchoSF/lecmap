@@ -20,6 +20,11 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import retrofit2.HttpException
 import java.io.File
 
+// Estados del servidor que indican que el trabajo sigue en curso; cualquier
+// otro estado (ready, error, …) es terminal y cierra el banner de espera.
+fun isServerProcessing(status: String?): Boolean =
+  status == "summarizing" || status == "transcribing" || status == "queued"
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
   // Se conserva la clave "notas_ia" para no perder el servidor ya configurado.
   private val prefs = app.getSharedPreferences("notas_ia", Context.MODE_PRIVATE)
@@ -697,8 +702,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     while (System.currentTimeMillis() < deadline) {
       delay(2500)
       val d = api.get(serverId)
-      if (!d.summary.isNullOrBlank()) return@withContext d
       if (d.status == "error") throw IllegalStateException(d.error ?: "No se pudo resumir")
+      // Estado terminal: devuelve aunque el resumen VIEJO ya estuviera presente.
+      // Antes se volvía apenas summary no estuviera vacío, así que con una nota
+      // que ya tenía resumen el primer poll salía con el estado recién puesto en
+      // "summarizing" y el banner quedaba pegado para siempre.
+      if (!isServerProcessing(d.status)) return@withContext d
     }
     throw IllegalStateException("El resumen está tardando demasiado. Probá de nuevo en unos minutos.")
   }
