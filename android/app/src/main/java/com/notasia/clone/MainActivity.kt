@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,11 +33,17 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -70,16 +77,45 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import java.io.File
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     setContent {
       LecmapTheme { AppScreen() }
+    }
+    handleOAuthIntent(intent)
+  }
+
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+    handleOAuthIntent(intent)
+  }
+
+  /**
+   * S3: callback del flujo Google — com.notasia.clone://login-callback?code=…
+   * Se consume una sola vez (se limpia el data) y se resuelve en el mismo
+   * ViewModel que usa la composición; los errores/cancelaciones se muestran
+   * en la pantalla de login.
+   */
+  private fun handleOAuthIntent(intent: Intent?) {
+    val uri = intent?.data ?: return
+    val code = uri.getQueryParameter("code")
+    val oauthError = uri.getQueryParameter("error_description")
+      ?: uri.getQueryParameter("error")
+    intent.data = null
+    if (code == null && oauthError == null) return
+    val vm = ViewModelProvider(this)[AppViewModel::class.java]
+    lifecycleScope.launch {
+      vm.handleOAuthCallback(code, oauthError)
     }
   }
 }
@@ -89,6 +125,29 @@ private fun startRecordingService(context: Context) {
   val intent = Intent(context, RecordingService::class.java)
     .setAction(RecordingService.ACTION_START)
   ContextCompat.startForegroundService(context, intent)
+}
+
+/** S1: splash de sesión — la app nunca se pinta antes que el Login. */
+@Composable
+private fun AuthSplash() {
+  Column(
+    modifier = Modifier.fillMaxSize(),
+    horizontalAlignment = Alignment.CenterHorizontally,
+    verticalArrangement = Arrangement.Center,
+  ) {
+    Text(
+      text = "Lecmap",
+      style = TextStyle(
+        brush = Brush.linearGradient(AccentGradient),
+        fontWeight = FontWeight.Bold,
+        fontSize = 40.sp,
+      ),
+    )
+    Spacer(Modifier.height(6.dp))
+    Text("Tus clases, en un mapa", color = TextSecondary, fontSize = 15.sp)
+    Spacer(Modifier.height(24.dp))
+    CircularProgressIndicator(color = Accent, modifier = Modifier.size(28.dp))
+  }
 }
 
 @Composable
@@ -137,8 +196,18 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
     vm.refresh()
   }
 
-  // Auth gate: si Supabase está configurado y no hay sesión, mostrar login.
-  if (SupabaseAuth.config != null && !vm.authLoading && !vm.isLoggedIn) {
+  // S1: splash mientras se valida la sesión guardada — la app nunca se pinta
+  // antes que Login (sin parpadeo del contenido principal).
+  if (SupabaseAuth.config != null && vm.initialSessionCheck) {
+    AuthSplash()
+    return
+  }
+  // Auth gate: con Supabase configurado y sin sesión, Login primero. S1: con
+  // grabación activa NO se navega al login (la sesión no se cierra en una
+  // toma); si al terminar sigue inválida, aparece el Login recién ahí.
+  if (SupabaseAuth.config != null && !vm.isLoggedIn &&
+    !RecordingState.isRecording && !RecordingState.isPaused
+  ) {
     LoginScreen(vm)
     return
   }
@@ -425,39 +494,53 @@ private fun Header(
   onLogout: () -> Unit,
 ) {
   Column(Modifier.fillMaxWidth()) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-      Column(Modifier.weight(1f)) {
-        Text(
-          text = "Lecmap",
-          style = TextStyle(
-            brush = Brush.linearGradient(AccentGradient),
-            fontWeight = FontWeight.Bold,
-            fontSize = 28.sp,
-          ),
-        )
-        Text(
-          "Tus clases, en un mapa",
-          color = TextSecondary,
-          fontSize = 12.sp,
-          modifier = Modifier.padding(top = 2.dp),
-        )
-      }
-      // Mismo patrón que la web: Salir (secundario) a la izquierda de Grabar.
-      SecondaryButton(
-        text = "Salir",
-        onClick = onLogout,
-        enabled = !busy,
-        modifier = Modifier.padding(end = 8.dp),
+    // Fila 1 (S2): nombre de la app y frase, en su propia fila.
+    Column(Modifier.fillMaxWidth()) {
+      Text(
+        text = "Lecmap",
+        style = TextStyle(
+          brush = Brush.linearGradient(AccentGradient),
+          fontWeight = FontWeight.Bold,
+          fontSize = 28.sp,
+        ),
       )
-      // S3: mientras hay toma en curso, Pausar/Reanudar junto a Detener.
-      // El label del botón es también el espejo del estado (grabando / pausa).
-      if (recording) {
+      Text(
+        "Tus clases, en un mapa",
+        color = TextSecondary,
+        fontSize = 12.sp,
+        modifier = Modifier.padding(top = 2.dp),
+      )
+    }
+    // Fila 2 (S2): los botones en su propia fila — el header no se desplaza.
+    // Con grabación activa: Salir oculto (no tiene sentido salir en una toma)
+    // y pausa/reanudar SÓLO ícono, con ancho fijo. Mismo patrón que la web:
+    // Salir (secundario) a la izquierda de Grabar.
+    Row(
+      Modifier.fillMaxWidth().padding(top = 8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.End,
+    ) {
+      if (!recording) {
         SecondaryButton(
-          text = if (paused) "▶ Reanudar" else "⏸ Pausar",
-          onClick = onPause,
+          text = "Salir",
+          onClick = onLogout,
           enabled = !busy,
           modifier = Modifier.padding(end = 8.dp),
         )
+      } else {
+        IconButton(
+          onClick = onPause,
+          enabled = !busy,
+          modifier = Modifier
+            .padding(end = 8.dp)
+            .size(40.dp),
+        ) {
+          Icon(
+            imageVector = if (paused) Icons.Default.PlayArrow else Icons.Default.Pause,
+            contentDescription = if (paused) "Reanudar grabación" else "Pausar grabación",
+            tint = Accent,
+          )
+        }
       }
       Button(
         onClick = onToggle,

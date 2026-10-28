@@ -15,6 +15,13 @@ data class SupabaseConfig(
 
 data class SignUpReq(val email: String, val password: String)
 data class SignInReq(val email: String, val password: String)
+// GoTrue exige JSON en el body: form-urlencoded responde 400 bad_json
+// ("Could not parse request body as JSON") y el refresh nunca funcionaba.
+data class RefreshReq(@SerializedName("refresh_token") val refreshToken: String)
+data class PkceExchangeReq(
+  @SerializedName("auth_code") val authCode: String,
+  @SerializedName("code_verifier") val codeVerifier: String,
+)
 
 data class AuthRes(
   @SerializedName("access_token") val accessToken: String,
@@ -29,8 +36,18 @@ data class AuthUser(
   val email: String? = null,
 )
 
-data class AuthError(val error_description: String? = null, val error: String? = null) {
-  val message: String get() = error_description ?: error ?: "Error de autenticación"
+// GoTrue devuelve errores con code/error_code/msg — hay que mapearlos todos o
+// el fallo se muestra como "Error de autenticación" sin diagnóstico posible.
+data class AuthError(
+  val error_description: String? = null,
+  val error: String? = null,
+  val msg: String? = null,
+  val error_code: String? = null,
+) {
+  val message: String
+    get() = error_description ?: error ?: msg
+      ?: error_code?.let { "Error de autenticación ($it)" }
+      ?: "Error de autenticación"
 }
 
 interface SupabaseAuthApi {
@@ -43,9 +60,14 @@ interface SupabaseAuthApi {
   @POST("auth/v1/logout")
   suspend fun signOut(@Header("Authorization") bearer: String): Response<Unit>
 
-  @FormUrlEncoded
   @POST("auth/v1/token?grant_type=refresh_token")
-  suspend fun refresh(@Field("refresh_token") refreshToken: String): Response<AuthRes>
+  suspend fun refresh(@Body body: RefreshReq): Response<AuthRes>
+
+  // GoTrue sólo acepta grant_type: password|refresh_token|id_token|pkce|web3.
+  // "pkce_exchange" responde 400 unsupported_grant_type (verificado en vivo
+  // contra el proyecto alojado el 2026-10-28); el intercambio es "pkce".
+  @POST("auth/v1/token?grant_type=pkce")
+  suspend fun pkceExchange(@Body body: PkceExchangeReq): Response<AuthRes>
 }
 
 /**
@@ -126,7 +148,15 @@ object SupabaseAuth {
   /** Refresca el access token usando el refresh token. */
   suspend fun refresh(refreshToken: String): AuthRes {
     val a = api() ?: throw AuthException("Supabase no configurado")
-    val r = a.refresh(refreshToken)
+    val r = a.refresh(RefreshReq(refreshToken))
+    if (!r.isSuccessful) throw AuthException(parseError(r))
+    return r.body() ?: throw AuthException("Respuesta vacía del servidor")
+  }
+
+  /** S3: intercambia el `code` del callback OAuth por la sesión (PKCE). */
+  suspend fun pkceExchange(authCode: String, codeVerifier: String): AuthRes {
+    val a = api() ?: throw AuthException("Supabase no configurado")
+    val r = a.pkceExchange(PkceExchangeReq(authCode, codeVerifier))
     if (!r.isSuccessful) throw AuthException(parseError(r))
     return r.body() ?: throw AuthException("Respuesta vacía del servidor")
   }
