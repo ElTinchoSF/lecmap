@@ -980,8 +980,13 @@ body {
   font-size: 14px;
   cursor: pointer;
   margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
 }
 .login-google:hover { border-color: var(--accent, #38bdf8); }
+.login-google-icon { flex-shrink: 0; display: block; }
 .login-error {
   color: #f87171;
   font-size: 13px;
