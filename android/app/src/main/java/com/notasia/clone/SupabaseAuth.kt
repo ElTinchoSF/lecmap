@@ -63,7 +63,10 @@ interface SupabaseAuthApi {
   @POST("auth/v1/token?grant_type=refresh_token")
   suspend fun refresh(@Body body: RefreshReq): Response<AuthRes>
 
-  @POST("auth/v1/token?grant_type=pkce_exchange")
+  // GoTrue sólo acepta grant_type: password|refresh_token|id_token|pkce|web3.
+  // "pkce_exchange" responde 400 unsupported_grant_type (verificado en vivo
+  // contra el proyecto alojado el 2026-10-28); el intercambio es "pkce".
+  @POST("auth/v1/token?grant_type=pkce")
   suspend fun pkceExchange(@Body body: PkceExchangeReq): Response<AuthRes>
 }
 
