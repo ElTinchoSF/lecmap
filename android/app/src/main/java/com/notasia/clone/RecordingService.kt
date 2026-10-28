@@ -39,6 +39,16 @@ object RecordingState {
   var savedLocalId by mutableStateOf<String?>(null)
     internal set
 
+  /**
+   * Ruta absoluta del `.m4a` en curso. Mientras existe, `LocalStore.recoverOrphans()`
+   * la excluye: sin esto, cualquier `refresh()` a mitad de grabación trataba el
+   * archivo como huérfano y creaba una nota fantasma antes de presionar Detener.
+   */
+  @Volatile
+  @JvmStatic
+  var activeFile: String? = null
+    internal set
+
   fun clearUploadError() {
     uploadError = null
   }
@@ -128,7 +138,12 @@ class RecordingService : Service() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(this) else MediaRecorder()
 
   private fun startRecording() {
-    val file = File(filesDir, "nota_${System.currentTimeMillis()}.m4a")
+    // Un solo timestamp: el nombre del archivo Y startedAt salen de acá. Antes
+    // el nombre usaba currentTimeMillis() y startedAt se asignaba después de
+    // prepare() (+370 ms), lo que producía dos localId distintos para la misma
+    // toma y el duplicado reportado en S1.
+    val start = System.currentTimeMillis()
+    val file = File(filesDir, "nota_$start.m4a")
     try {
       recorder = newRecorder().apply {
         setAudioSource(MediaRecorder.AudioSource.MIC)
@@ -143,9 +158,10 @@ class RecordingService : Service() {
         start()
       }
       output = file
-      startedAt = System.currentTimeMillis()
+      startedAt = start
       RecordingState.isRecording = true
-      RecordingState.startedAt = startedAt
+      RecordingState.startedAt = start
+      RecordingState.activeFile = file.absolutePath
       RecordingState.uploadError = null
       RecordingState.savedLocalId = null
 
@@ -165,6 +181,7 @@ class RecordingService : Service() {
       output = null
       file.delete()
       RecordingState.isRecording = false
+      RecordingState.activeFile = null
       RecordingState.uploadError = "No se pudo iniciar la grabación"
       stopForegroundCompat()
       stopSelf()
@@ -186,6 +203,10 @@ class RecordingService : Service() {
       startedAt = 0L
       RecordingState.isRecording = false
       RecordingState.startedAt = 0L
+      // El archivo ya no está en curso: recoverOrphans vuelve a poder verlo
+      // (si la upsert async de abajo no llega, la recupera él como huérfano
+      // real — con el mismo localId, así que no se duplica).
+      RecordingState.activeFile = null
     }
 
     if (failed || file == null || !file.exists() || file.length() == 0L) {
@@ -254,6 +275,7 @@ class RecordingService : Service() {
       startedAt = 0L
       RecordingState.isRecording = false
       RecordingState.startedAt = 0L
+      RecordingState.activeFile = null
 
       if (file != null && file.exists() && file.length() > 0L) {
         try {

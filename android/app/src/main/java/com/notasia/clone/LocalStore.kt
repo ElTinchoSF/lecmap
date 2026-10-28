@@ -96,11 +96,16 @@ class LocalStore(context: Context) : SQLiteOpenHelper(context, DB_NAME, null, 1)
       .query(TABLE, arrayOf("audio_file"), "audio_file IS NOT NULL", null, null, null, null)
       .use { c -> while (c.moveToNext()) c.getString(0)?.let { referenced.add(it) } }
 
+    // El .m4a en curso NO es huérfano: la fila recién se crea al Detener.
+    // Sin este filtro, un refresh() a mitad de grabación creaba la nota
+    // fantasma que el usuario veía antes de presionar Detener (S1).
+    val active = RecordingState.activeFile
+
     var recovered = 0
     appContext.filesDir.listFiles().orEmpty()
       .filter {
         it.isFile && it.name.startsWith(AUDIO_PREFIX) && it.name.endsWith(AUDIO_SUFFIX) &&
-          it.length() > 0L && it.absolutePath !in referenced
+          it.length() > 0L && it.absolutePath !in referenced && it.absolutePath != active
       }
       .forEach { file ->
         val start = file.name
