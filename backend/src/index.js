@@ -21,7 +21,7 @@ import {
   resetInterrupted,
   deleteRecording,
 } from './db.js';
-import { targetSummarySentences, transcriptDurationSeconds } from './summary.js';
+import { targetSummarySentences, transcriptDurationSeconds, condenseToFit } from './summary.js';
 
 const app = Fastify({ logger: true });
 const defaultOrigins = [
@@ -638,6 +638,10 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
 
 const summaryJobs = new Set();
 const MAX_CHUNK_CHARS = 10_000;
+// Presupuesto del material que llega al call final (~2500 tokens + prompt
+// ~800 + salida 4000 < 8000 TPM de Groq free). Si el material lo supera,
+// se condensa jerárquicamente en vez de truncarse.
+const FINAL_MATERIAL_MAX_CHARS = 10_000;
 
 function transcriptChunks(
   segments,
@@ -703,6 +707,17 @@ async function summarizeChunkSafe(chunk, index, total, depth = 0) {
   }
 }
 
+const MERGE_SYSTEM_PROMPT =
+  'Sos un asistente que condensa resúmenes de fragmentos de una clase. Reescribí un texto compacto en español que conserve TODOS los hechos, definiciones, fórmulas, ejemplos, nombres y conclusiones de los fragmentos, sin inventar nada y sin repetirte. Sin encabezados ni preámbulo: sólo el contenido condensado.';
+
+async function condensePartsChunk(text, index, total) {
+  const raw = await openaiChat([
+    { role: 'system', content: MERGE_SYSTEM_PROMPT },
+    { role: 'user', content: `Parte ${index + 1} de ${total}:\n\n${text}` },
+  ], { maxTokens: 900 });
+  return String(raw || '').trim() || text;
+}
+
 function mindmapSystemPrompt(template, targetSentences) {
   return `Eres un experto que convierte transcripciones en mapas de ideas de estudio en español. Template: ${template}. `
     + 'Responde SOLO JSON con esta forma exacta: '
@@ -756,9 +771,15 @@ async function runSummaryJob(id, userId, template) {
         );
       }
     }
-    let material = parts.join('\n\n');
-    // Último resguardo para clases muy largas: el pedido final debe entrar en TPM.
-    if (material.length > 7000) material = material.slice(0, 7000);
+    // Condensación jerárquica: ninguna parte se descarta. Si el material
+    // supera el presupuesto del call final, condensamos lotes y volvemos a
+    // intentar — el final de la clase siempre llega al modelo.
+    const { material, rounds } = await condenseToFit(
+      parts,
+      condensePartsChunk,
+      FINAL_MATERIAL_MAX_CHARS,
+    );
+    if (rounds > 0) console.log(`[summarize] ${id}: material condensado en ${rounds} ronda(s)`);
 
     const minutes = transcriptDurationSeconds(r.transcript) / 60;
     const targetSentences = targetSummarySentences(minutes);
