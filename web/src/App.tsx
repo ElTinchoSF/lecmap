@@ -978,7 +978,12 @@ export default function App() {
     return r.json();
   };
 
-  const analyze = async (note: NoteView) => {
+  /**
+   * Sube (si hace falta) y transcribe la nota. `transcribeOnly` (S6) saltea el
+   * resumen: el detalle ofrece "Transcribir" aparte de "Resumir", y "Analizar"
+   * de la tarjeta llama con `false` para encadenar ambos pasos (S5).
+   */
+  const analyze = async (note: NoteView, transcribeOnly = false) => {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -1021,7 +1026,7 @@ export default function App() {
         detail = await r.json();
       }
 
-      if (!note.summary || needsTranscribe) {
+      if (!transcribeOnly && (!note.summary || needsTranscribe)) {
         const r = await apiFetch(`/recordings/${serverId}/summarize`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1071,7 +1076,7 @@ export default function App() {
         await chooseAudio(view);
       }
     } catch (e) {
-      setError(errText(e, 'No se pudo analizar la nota'));
+      setError(errText(e, transcribeOnly ? 'No se pudo transcribir' : 'No se pudo analizar la nota'));
       if (local) {
         const failed = { ...local, status: 'error', error: errText(e, 'Error de análisis') };
         await saveLocalNote(failed).catch(() => {});
@@ -1387,8 +1392,10 @@ export default function App() {
 
               <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
                 {sel.serverId || sel.hasLocalAudio ? (
-                  <button className="btn btn-primary" onClick={() => analyze(sel)} disabled={busy || sel.status === 'summarizing'}>
-                    {sel.serverId ? 'Analizar de nuevo' : 'Analizar (subir audio)'}
+                  /* S6: en el detalle solo "Transcribir" + "Resumir"; "Analizar"
+                     vive únicamente en la tarjeta y encadena ambos pasos. */
+                  <button className="btn btn-primary" onClick={() => analyze(sel, true)} disabled={busy || sel.status === 'summarizing'}>
+                    {sel.serverId ? 'Transcribir' : 'Transcribir (subir audio)'}
                   </button>
                 ) : (
                   <span style={{ color: 'var(--text2)', fontSize: 13, alignSelf: 'center' }}>

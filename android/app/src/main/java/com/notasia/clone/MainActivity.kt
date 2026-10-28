@@ -618,7 +618,9 @@ private fun Detail(
       Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      PrimaryButton(text = "Analizar", onClick = { vm.analyze(rec) }, enabled = !vm.busy)
+      // S6: en el detalle solo "Transcribir" + "Resumir"; el "Analizar" que
+      // encadena ambos pasos vive únicamente en la tarjeta (RecordingCard).
+      PrimaryButton(text = "Transcribir", onClick = { vm.transcribe() }, enabled = !vm.busy)
       SecondaryButton(
         text = "Resumir",
         onClick = { vm.summarize() },
