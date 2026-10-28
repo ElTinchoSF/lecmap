@@ -21,6 +21,7 @@ import {
   resetInterrupted,
   deleteRecording,
 } from './db.js';
+import { targetSummarySentences, transcriptDurationSeconds } from './summary.js';
 
 const app = Fastify({ logger: true });
 const defaultOrigins = [
@@ -702,7 +703,7 @@ async function summarizeChunkSafe(chunk, index, total, depth = 0) {
   }
 }
 
-function mindmapSystemPrompt(template) {
+function mindmapSystemPrompt(template, targetSentences) {
   return `Eres un experto que convierte transcripciones en mapas de ideas de estudio en español. Template: ${template}. `
     + 'Responde SOLO JSON con esta forma exacta: '
     + '{'
@@ -735,7 +736,8 @@ function mindmapSystemPrompt(template) {
     + 'Reglas de contenido: label/term/label de paso/evento/etiqueta corto (2 a 5 palabras); detail o definition una o dos frases con el contenido real de la transcripción; points/effects/solutions viñetas concretas (datos, sub-ideas, fórmulas, ejemplos); para comparison, cada item con sus values en el mismo orden que dimensions; para timeline usá "date" con el año, década o momento mencionado. '
     + 'Organizá por relación de ideas; solo usá orden cronológico cuando elijas "timeline" o "steps". No menciones minutos de la grabación. '
     + 'No repitas ideas y no inventes contenido ausente. '
-    + 'El summary debe ser un resumen de estudio de 3 a 6 frases.';
+    + 'El summary debe ser un resumen de estudio de aproximadamente ' + targetSentences
+    + ' frases; priorizá cubrir todas las ideas principales antes que acortar.';
 }
 
 async function runSummaryJob(id, userId, template) {
@@ -758,8 +760,12 @@ async function runSummaryJob(id, userId, template) {
     // Último resguardo para clases muy largas: el pedido final debe entrar en TPM.
     if (material.length > 7000) material = material.slice(0, 7000);
 
+    const minutes = transcriptDurationSeconds(r.transcript) / 60;
+    const targetSentences = targetSummarySentences(minutes);
+    console.log(`[summarize] ${id}: ${minutes.toFixed(1)} min → objetivo ${targetSentences} frases`);
+
     const messages = [
-      { role: 'system', content: mindmapSystemPrompt(template) },
+      { role: 'system', content: mindmapSystemPrompt(template, targetSentences) },
       { role: 'user', content: material },
     ];
 
