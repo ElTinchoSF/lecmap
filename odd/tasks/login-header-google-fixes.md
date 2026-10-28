@@ -48,8 +48,8 @@ Aceptación:
 |----|-------|-------|--------|--------|
 | T1 | S1 | inline | ✅ done | dbc0c9a |
 | T2 | S2 (Android) | inline | ✅ done | (junto con T3) |
-| T3 | S2 (web) | inline | ✅ done | feat(ui): three-row header… |
-| T4 | S3 (código Android) | inline | ✅ done | feat(android): Continue with Google… |
+| T3 | S2 (web) | inline | ✅ done | d2ba938 + 352b148 (fila 3) |
+| T4 | S3 (código Android) | inline | ✅ done | b671992 + a17d3b3 (fix pkce) |
 | T5 | S3 (config usuario — guía) | inline | 📤 guía entregada — blocked: config del usuario | |
 | T6 | builds + E2E + doc/assess | inline | ✅ done | f509f05 |
 
@@ -84,3 +84,14 @@ L5 (2026-10-28, cierre T6):
 - Cold start final: splash → app directo (sesión válida), lista con sólo las 2 notas reales del usuario.
 - Asses sobre `cc9b8bc..f509f05`: `risk: medium`, `review_due: false` (`under_budget`, reason `executable_change` en AndroidManifest) → sin review ceremony; registrar tier medium/under_budget.
 - Guía de config (T5) entregada al usuario en el chat: Google Cloud OAuth Client + provider Google en Supabase + Redirect URLs (`https://lecmap.app`, `com.notasia.clone://login-callback`, callback `https://wglycndzgxgjtplwrcyq.supabase.co/auth/v1/callback`).
+
+L6 (2026-10-28, verificador independiente + corrección de bloqueadores):
+- Verifier (gentle-ai-verify, scratch fresh, cc9b8bc..da08cd1) → **2 BLOCKERS**:
+  - **B1**: `SupabaseAuth.kt` usaba `grant_type=pkce_exchange`; GoTrue sólo acepta `password|refresh_token|id_token|pkce|web3` → el intercambio del código de Google habría fallado con 400 `unsupported_grant_type` (RED verificado EN VIVO contra `wglycndzgxgjtplwrcyq.supabase.co`: `pkce_exchange` → `unsupported_grant_type`; `pkce` → `flow_state_not_found`).
+  - **B2**: S2 acepta "Fila 1 y fila 3 … en ambas plataformas", pero el header web sólo tenía 2 filas; `showSettings` era dead code (useState sin setter).
+- Corrección (una sola tanda):
+  - B1: `grant_type=pkce` + `SupabaseAuthContractTest.kt` (4 tests: JSON body del refresh, campo `refresh_token`, mapeo de errores GoTrue, grant pkce). **RED observado** (`expected …pkce but was …pkce_exchange`, 4 tests/1 failure) → fix → **GREEN** (4/0). Nota: los métodos `suspend` de Kotlin llevan `Continuation` extra → buscar por `declaredMethods`, no `getMethod` con la firma Kotlin.
+  - B2: fila 3 web (`header-meta`: email/servidor + "Cambiar servidor" que abre el panel settings), panel con input editable de API persistido en `localStorage('lecmap_api_url')` (prioridad sobre `VITE_API_URL`) + Guardar/Restablecer con reload.
+- Verificación: gradle `testDebugUnitTest` GREEN (4/0), `assembleDebug` OK, `tsc --noEmit` = 0, `vite build` OK; APK reinstalado en device → smoke: sesión activa, header 3 filas, notas reales.
+- Advisories del verifier (sin corrección, aceptadas): A) cualquier app puede inyectar `?error=` al callback (no roba sesión por PKCE); B) doble tap Google pisa el verifier (limitación documentada del SDK); C) signOut vs refresh en vuelo (pre-existente); D) tokens/verifier en prefs con auto-backup; E) `singleTask` no afecta `RecordingService`.
+- Commits: `a17d3b3` (fix pkce + tests), `352b148` (web fila 3).
