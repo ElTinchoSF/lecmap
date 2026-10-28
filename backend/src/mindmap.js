@@ -225,11 +225,12 @@ function normalizeMindmap(mm) {
   return normalizeLayout(mm, title);
 }
 
-function mindmapSystemPrompt(template, targetSentences) {
+// El prompt pide SOLO el mindmap: el resumen se genera en un call dedicado
+// (summarySystemPrompt en summary.js) para que no compita por maxTokens.
+function mindmapSystemPrompt(template) {
   return `Eres un experto que convierte transcripciones en mapas de ideas de estudio en español. Template: ${template}. `
     + 'Responde SOLO JSON con esta forma exacta: '
     + '{'
-    + '"summary": string, '
     + '"mindmap": {'
     + '"title": string, '
     + '"sections": [{"title": string, '
@@ -261,9 +262,7 @@ function mindmapSystemPrompt(template, targetSentences) {
     + 'Si el tema lo pide, anidá sub-ramas dentro de una rama usando su campo "branches". '
     + 'Reglas de contenido: label/term/label de paso/evento/etiqueta corto (2 a 5 palabras); detail o definition una o dos frases con el contenido real de la transcripción; points/effects/solutions viñetas concretas (datos, sub-ideas, fórmulas, ejemplos); para comparison, cada item con sus values en el mismo orden que dimensions; para timeline usá "date" con el año, década o momento mencionado. '
     + 'Organizá por relación de ideas; solo usá orden cronológico cuando elijas "timeline" o "steps". No menciones minutos de la grabación. '
-    + 'No repitas ideas y no inventes contenido ausente. '
-    + 'El summary debe ser un resumen de estudio de aproximadamente ' + targetSentences
-    + ' frases; priorizá cubrir todas las ideas principales antes que acortar.';
+    + 'No repitas ideas y no inventes contenido ausente.';
 }
 
 export { normalizeMindmap, mindmapSystemPrompt, ALL_LAYOUTS };

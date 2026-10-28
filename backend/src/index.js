@@ -21,7 +21,7 @@ import {
   resetInterrupted,
   deleteRecording,
 } from './db.js';
-import { targetSummarySentences, transcriptDurationSeconds, condenseToFit } from './summary.js';
+import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
 
 const app = Fastify({ logger: true });
@@ -436,12 +436,17 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
 
 const summaryJobs = new Set();
 const MAX_CHUNK_CHARS = 10_000;
-// Presupuesto del material que llega al call final. paceChat rechaza pedidos
-// estimados en > 7000 tokens (TPM_BUDGET): con prompt del mindmap (~650) y
-// maxTokens 4000, al material le quedan ~2350 tokens ≈ 8200 chars; usamos
-// 7000 chars (~2000 tokens) con margen para el prompt multi-sección de S3.
+// Presupuesto del material que llega a los calls finales. paceChat rechaza
+// pedidos estimados en > 7000 tokens (TPM_BUDGET). El resumen y el mindmap se
+// generan en DOS calls separados para que el resumen no compita con el JSON
+// del mapa multi-sección por los tokens de salida:
+//   resumen: material (~2000) + prompt (~100) + SUMMARY_MAX_TOKENS (2500) ≈ 4600
+//   mindmap: material (~2000) + prompt (~900) + maxTokens (4000) ≈ 6900
 // Si el material lo supera, se condensa jerárquicamente en vez de truncarse.
 const FINAL_MATERIAL_MAX_CHARS = 7_000;
+// Salida dedicada del resumen: alcanza para ~70 frases (~1000 palabras) del
+// techo de targetSummarySentences sin quedarse corta para clases largas.
+const SUMMARY_MAX_TOKENS = 2_500;
 
 function transcriptChunks(
   segments,
@@ -548,8 +553,27 @@ async function runSummaryJob(id, userId, template) {
     const targetSentences = targetSummarySentences(minutes);
     console.log(`[summarize] ${id}: ${minutes.toFixed(1)} min → objetivo ${targetSentences} frases`);
 
+    // Call A: resumen solo — su propio maxTokens para que el mapa multi-sección
+    // no le robe salida (en el call único el resumen quedaba en ~3 frases vagas
+    // para clases largas, pese al objetivo escalonado de frases).
+    const summaryMessages = [
+      { role: 'system', content: summarySystemPrompt(targetSentences) },
+      { role: 'user', content: material },
+    ];
+    let rawSummary;
+    try {
+      rawSummary = await openaiChat(summaryMessages, { json: true, maxTokens: SUMMARY_MAX_TOKENS });
+    } catch (e) {
+      if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
+      console.warn('[summarize] JSON del resumen falló, reintento simple:', e.message.slice(0, 140));
+      rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
+    }
+    const summaryText = str(parseJsonLoose(rawSummary).summary);
+    if (!summaryText) throw new Error('La IA no devolvió un resumen válido');
+
+    // Call B: mindmap solo.
     const messages = [
-      { role: 'system', content: mindmapSystemPrompt(template, targetSentences) },
+      { role: 'system', content: mindmapSystemPrompt(template) },
       { role: 'user', content: material },
     ];
 
@@ -560,14 +584,14 @@ async function runSummaryJob(id, userId, template) {
       // 413/429: reintentar con menos texto ayuda. Timeout: el reintento solo
       // duplica la espera, así que se propaga al catch del job.
       if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
-      console.warn('[summarize] JSON final falló, reintento simple:', e.message.slice(0, 140));
+      console.warn('[summarize] JSON del mindmap falló, reintento simple:', e.message.slice(0, 140));
       raw = await openaiChat(messages, { json: false, maxTokens: 4000 });
     }
 
     const parsed = parseJsonLoose(raw);
     const mindmap = normalizeMindmap(parsed.mindmap);
     if (!mindmap) throw new Error('La IA no devolvió un mapa de ideas válido');
-    await saveSummary(id, userId, parsed.summary, mindmap);
+    await saveSummary(id, userId, summaryText, mindmap);
     console.log(`[summarize] ${id} listo (${chunks.length} bloque/s)`);
   } catch (e) {
     console.error(`[summarize] ${id} error:`, e.message);

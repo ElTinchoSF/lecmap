@@ -5,6 +5,7 @@ import {
   transcriptDurationSeconds,
   groupPartsForMerge,
   condenseToFit,
+  summarySystemPrompt,
 } from '../src/summary.js';
 
 test('targetSummarySentences aplica el piso de 6 frases', () => {
@@ -85,4 +86,23 @@ test('condenseToFit conserva el orden de las partes condensadas', async () => {
   const parts = ['aaa', 'bbb', 'ccc', 'ddd'];
   const { material } = await condenseToFit(parts, condense, 5);
   assert.equal(material, '[a]\n\n[b]\n\n[c]\n\n[d]');
+});
+
+// --- Prompt del resumen (call dedicado, separado del mindmap) ---
+
+test('summarySystemPrompt pide el objetivo de frases escalonado', () => {
+  const p = summarySystemPrompt(48);
+  assert.match(p, /aproximadamente 48\s+frases/);
+});
+
+test('summarySystemPrompt pide SOLO el summary en JSON', () => {
+  const p = summarySystemPrompt(24);
+  assert.match(p, /"summary":\s*string/);
+  assert.ok(!/"mindmap"/.test(p), 'el prompt del resumen no debe pedir mindmap');
+  assert.ok(!/sections|layout|topics/i.test(p), 'sin referencias al schema del mindmap');
+});
+
+test('summarySystemPrompt prioriza cubrir todas las ideas', () => {
+  const p = summarySystemPrompt(30);
+  assert.match(p, /ideas principales/i);
 });
