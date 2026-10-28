@@ -11,7 +11,7 @@ import {
 } from './local';
 import type { LocalNote } from './local';
 import { useAuth } from './auth';
-import { LoginScreen } from './Login';
+import { LoginScreen, AuthSplash } from './Login';
 import { supabase } from './supabase';
 import './App.css';
 
@@ -1319,8 +1319,12 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  // Auth gate: si Supabase está configurado y no hay sesión, mostrar login.
-  if (supabase && !auth.loading && !auth.session) {
+  // S1: splash mientras se resuelve la sesión — la app nunca se pinta antes
+  // que Login (mismo gate que Android: sin parpadeo del contenido principal).
+  if (supabase && auth.loading) {
+    return <AuthSplash />;
+  }
+  if (supabase && !auth.session) {
     return <LoginScreen auth={auth} />;
   }
 

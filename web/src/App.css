@@ -210,6 +210,47 @@ body {
   margin: 0;
 }
 
+/* S1 (espejo de Android): splash de sesión — cubre el flash de la app antes
+   que Login mientras se resuelve `auth.loading`. */
+.auth-splash {
+  min-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.auth-splash-title {
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1.1;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.auth-splash-subtitle {
+  color: var(--text2);
+  font-size: 1rem;
+}
+
+.auth-splash-spinner {
+  width: 30px;
+  height: 30px;
+  margin-top: 22px;
+  border: 3px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: auth-splash-spin 0.8s linear infinite;
+}
+
+@keyframes auth-splash-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .main-grid {
   display: grid;
   grid-template-columns: 340px 1fr;
