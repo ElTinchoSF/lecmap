@@ -148,6 +148,15 @@ export async function setAudioPath(id, userId, audioPath) {
   return getRecording(id, userId);
 }
 
+/** S4: renombra la nota (PATCH /recordings/:id con { title }). */
+export async function updateTitle(id, userId, title) {
+  await pool.query(
+    'UPDATE recordings SET title = $1 WHERE id = $2 AND user_id = $3',
+    [title, id, userId],
+  );
+  return getRecording(id, userId);
+}
+
 export async function listAudioPaths(userId) {
   const { rows } = await pool.query(
     'SELECT audio_path FROM recordings WHERE user_id = $1 AND audio_path IS NOT NULL',

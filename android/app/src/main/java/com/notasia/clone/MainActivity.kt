@@ -100,10 +100,11 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
 
   var showLogout by remember { mutableStateOf(false) }
 
-  // S2: nombre de la nota recién guardada (también reusado por S4 para renombrar).
+  // S2/S4: nombre de la nota — al guardar (solo local) o al renombrar (serverId).
   var showNamePrompt by remember { mutableStateOf(false) }
   var nameDraft by remember { mutableStateOf("") }
   var nameLocalId by remember { mutableStateOf<String?>(null) }
+  var nameServerId by remember { mutableStateOf<String?>(null) }
   var nameSuggested by remember { mutableStateOf("") }
   // Al volver a la app, reintenta grabaciones que quedaron sin subir.
   DisposableEffect(lifecycleOwner) {
@@ -151,6 +152,7 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
     // guardar, la nota conserva el título sugerido (no se pierde la grabación).
     if (suggested != null) {
       nameLocalId = id
+      nameServerId = null
       nameSuggested = suggested
       nameDraft = suggested
       showNamePrompt = true
@@ -243,6 +245,20 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
               vm = vm,
               question = question,
               onQuestion = { question = it },
+              onRename = {
+                // S4: diálogo con el título actual editable (mismo que S2).
+                // Nota pura de servidor: serverId no está seteado (solo lo
+                // completa el merge con copia local) — el id real está en `id`,
+                // y para notas locales `id == localId`, por eso el takeIf.
+                fun serverOf(d: RecordingDto): String? =
+                  d.serverId ?: d.id?.takeIf { d.localId == null }
+                val s = vm.selected ?: rec
+                nameLocalId = s.localId ?: rec.localId
+                nameServerId = serverOf(s) ?: serverOf(rec)
+                nameDraft = (s.title ?: rec.title ?: "").orEmpty()
+                nameSuggested = nameDraft
+                showNamePrompt = true
+              },
             )
           }
         }
@@ -313,12 +329,15 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
     )
   }
 
-  // S2: nombre editable al guardar la grabación (título sugerido pre-cargado).
+  // S2/S4: nombre editable — al guardar la toma (sin servidor) o al renombrar
+  // una nota existente (serverId → PATCH /recordings/:id).
   if (showNamePrompt) {
     AlertDialog(
       onDismissRequest = { showNamePrompt = false },
       containerColor = Surface1,
-      title = { Text("Guardar grabación", color = TextPrimary) },
+      title = {
+        Text(if (nameServerId != null) "Renombrar" else "Guardar grabación", color = TextPrimary)
+      },
       text = {
         OutlinedTextField(
           value = nameDraft,
@@ -332,7 +351,12 @@ fun AppScreen(vm: AppViewModel = viewModel()) {
       confirmButton = {
         TextButton(onClick = {
           val title = nameDraft.trim().ifBlank { nameSuggested }
-          nameLocalId?.let { vm.renameLocal(it, title) }
+          val sid = nameServerId
+          if (sid != null) {
+            vm.renameServer(sid, nameLocalId, title)
+          } else {
+            nameLocalId?.let { vm.renameLocal(it, title) }
+          }
           showNamePrompt = false
         }) { Text("Guardar", color = Accent, fontWeight = FontWeight.Bold) }
       },
@@ -669,6 +693,7 @@ private fun Detail(
   vm: AppViewModel,
   question: String,
   onQuestion: (String) -> Unit,
+  onRename: () -> Unit,
 ) {
   Column(Modifier.fillMaxWidth().padding(top = 6.dp)) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -688,6 +713,12 @@ private fun Detail(
       // S6: en el detalle solo "Transcribir" + "Resumir"; el "Analizar" que
       // encadena ambos pasos vive únicamente en la tarjeta (RecordingCard).
       PrimaryButton(text = "Transcribir", onClick = { vm.transcribe() }, enabled = !vm.busy)
+      // S4: renombrar con diálogo de título editable (PATCH al servidor).
+      SecondaryButton(
+        text = "Renombrar",
+        onClick = onRename,
+        enabled = !vm.busy,
+      )
       SecondaryButton(
         text = "Resumir",
         onClick = { vm.summarize() },

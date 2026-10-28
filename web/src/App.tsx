@@ -1347,7 +1347,9 @@ export default function App() {
       {rename && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
           <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 20, width: 'min(420px, calc(100vw - 32px))' }}>
-            <h3 style={{ margin: '0 0 4px', color: 'var(--text)', fontSize: 17 }}>Guardar grabación</h3>
+            <h3 style={{ margin: '0 0 4px', color: 'var(--text)', fontSize: 17 }}>
+              {rename.serverId ? 'Renombrar' : 'Guardar grabación'}
+            </h3>
             <p style={{ color: 'var(--text2)', fontSize: 13, margin: '0 0 12px' }}>
               {rename.serverId ? 'Nuevo nombre de la nota.' : 'Poné un nombre a la nota. Podés cambiarlo después.'}
             </p>
@@ -1498,6 +1500,17 @@ export default function App() {
                     Audio liberado: no queda audio para reanalizar.
                   </span>
                 )}
+                {/* S4: renombrar con el diálogo de título (mismo modal que S2). */}
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setRename({ localId: sel.localId ?? null, serverId: sel.serverId ?? null, suggested: sel.title });
+                    setRenameDraft(sel.title);
+                  }}
+                  disabled={busy}
+                >
+                  Renombrar
+                </button>
                 {sel.transcript.length > 0 && (
                   <button className="btn btn-secondary" onClick={summarize} disabled={busy || sel.status === 'summarizing'}>Resumir</button>
                 )}

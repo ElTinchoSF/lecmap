@@ -290,6 +290,29 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
   }
 
+  /** S4: renombra en el servidor (PATCH) y sincroniza la copia local y la lista. */
+  fun renameServer(serverId: String, localId: String?, newTitle: String) {
+    viewModelScope.launch {
+      busy = true
+      error = null
+      try {
+        val detail = withContext(Dispatchers.IO) { api.rename(serverId, RenameReq(newTitle)) }
+        val finalTitle = detail.title ?: newTitle
+        if (localId != null) {
+          withContext(Dispatchers.IO) { store.setTitle(localId, finalTitle) }
+        } else {
+          withContext(Dispatchers.IO) { store.updateFromServer(serverId, detail) }
+        }
+        if (selected?.serverId == serverId) selected = selected?.copy(title = finalTitle)
+        refresh()
+      } catch (e: Exception) {
+        if (!handleGone(e)) error = friendly(e)
+      } finally {
+        busy = false
+      }
+    }
+  }
+
   fun transcribe() {
     val rec = selected ?: return
     val serverId = rec.serverId

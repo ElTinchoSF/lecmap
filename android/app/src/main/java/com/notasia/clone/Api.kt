@@ -50,7 +50,9 @@ data class RecordingListDto(
 
 data class AskReq(val question: String)
 data class AskRes(val answer: String? = null)
-data class SummarizeReq(val template: String = "class")
+  data class SummarizeReq(val template: String = "class")
+
+  data class RenameReq(val title: String)
 
 interface Api {
   @GET("recordings")
@@ -88,6 +90,10 @@ interface Api {
 
   @DELETE("recordings/{id}")
   suspend fun delete(@Path("id") id: String): Response<Unit>
+
+  /** S4: renombrar la nota en el servidor (ruta nueva PATCH /recordings/:id). */
+  @PATCH("recordings/{id}")
+  suspend fun rename(@Path("id") id: String, @Body body: RenameReq): RecordingDto
 }
 
 /** Resultado de validar la URL del backend. */

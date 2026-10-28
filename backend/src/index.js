@@ -16,6 +16,7 @@ import {
   saveTranscript,
   saveSummary,
   setAudioPath,
+  updateTitle,
   listAudioPaths,
   resetInterrupted,
   deleteRecording,
@@ -559,6 +560,16 @@ app.get('/recordings/:id', async (req, reply) => {
   const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   return r;
+});
+
+// S4: renombrar la nota. El backend no tenía ninguna ruta de escritura de
+// título (solo GET/POST/DELETE); el hook de auth ya cubre req.userId.
+app.patch('/recordings/:id', async (req, reply) => {
+  const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+  if (!title) return reply.code(400).send({ error: 'title requerido' });
+  const r = await getRecording(req.params.id, req.userId);
+  if (!r) return reply.code(404).send({ error: 'not found' });
+  return updateTitle(r.id, req.userId, title);
 });
 
 app.delete('/recordings/:id', async (req, reply) => {
