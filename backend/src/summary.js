@@ -68,9 +68,24 @@ export async function condenseToFit(parts, condense, maxChars, maxRounds = 4) {
 // de ideas (un mapa multi-sección se come los tokens de salida del call único).
 export function summarySystemPrompt(targetSentences) {
   return 'Eres un experto que escribe resúmenes de estudio en español a partir del material de una clase. '
-    + 'Responde SOLO JSON con esta forma exacta: {"summary": string}. '
-    + 'El summary debe ser un resumen de estudio de aproximadamente ' + targetSentences
+    + 'Respondé SOLO con el texto del resumen: sin JSON, sin encabezados, sin preámbulo y sin comillas alrededor. '
+    + 'El resumen debe tener aproximadamente ' + targetSentences
     + ' frases; priorizá cubrir todas las ideas principales antes que acortar. '
-    + 'No repitas ideas y no inventes contenido ausente. '
-    + 'Sin encabezados ni preámbulo: sólo el campo summary.';
+    + 'No repitas ideas y no inventes contenido ausente.';
+}
+
+// Tolerante a cualquier formato de salida: texto plano (lo pedido), JSON con
+// campo summary, o JSON dentro de fences markdown. El resumen es prosa — no
+// debe depender del modo JSON del proveedor (Groq 400 "Failed to generate
+// JSON" con gpt-oss-120b truncaba el call y dejaba el JSON sin cerrar).
+export function extractSummaryText(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  const unfenced = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const brace = unfenced.match(/\{[\s\S]*\}/);
+  try {
+    const obj = JSON.parse(brace ? brace[0] : unfenced);
+    if (typeof obj?.summary === 'string' && obj.summary.trim()) return obj.summary.trim();
+  } catch { /* no es JSON: el unfenced es el resumen */ }
+  return unfenced;
 }

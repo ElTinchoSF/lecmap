@@ -21,7 +21,7 @@ import {
   resetInterrupted,
   deleteRecording,
 } from './db.js';
-import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt } from './summary.js';
+import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
 
 const app = Fastify({ logger: true });
@@ -287,6 +287,17 @@ function parseJsonLoose(text) {
   }
 }
 
+// Como parseJsonLoose, pero atribuye el fallo al call que lo produjo y
+// conserva el inicio del raw para diagnosticar en logs y en el estado error.
+function parseJsonLooseCtx(text, ctx) {
+  try {
+    return parseJsonLoose(text);
+  } catch (e) {
+    const head = String(text || '').slice(0, 160).replace(/\s+/g, ' ');
+    throw new Error(`${ctx}: ${e.message} — raw: "${head}"`);
+  }
+}
+
 const str = (v) => (v === undefined || v === null ? '' : String(v).trim());
 const strList = (v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
 
@@ -439,14 +450,16 @@ const MAX_CHUNK_CHARS = 10_000;
 // Presupuesto del material que llega a los calls finales. paceChat rechaza
 // pedidos estimados en > 7000 tokens (TPM_BUDGET). El resumen y el mindmap se
 // generan en DOS calls separados para que el resumen no compita con el JSON
-// del mapa multi-sección por los tokens de salida:
-//   resumen: material (~2000) + prompt (~100) + SUMMARY_MAX_TOKENS (2500) ≈ 4600
+// del mapa multi-sección por los tokens de salida. El call del resumen va en
+// TEXTO PLANO (sin response_format): el modo JSON de Groq con gpt-oss-120b
+// devolvía 400 "Failed to generate JSON" y el retry quedaba truncado:
+//   resumen: material (~2000) + prompt (~90) + SUMMARY_MAX_TOKENS (3000) ≈ 5100
 //   mindmap: material (~2000) + prompt (~900) + maxTokens (4000) ≈ 6900
 // Si el material lo supera, se condensa jerárquicamente en vez de truncarse.
 const FINAL_MATERIAL_MAX_CHARS = 7_000;
 // Salida dedicada del resumen: alcanza para ~70 frases (~1000 palabras) del
-// techo de targetSummarySentences sin quedarse corta para clases largas.
-const SUMMARY_MAX_TOKENS = 2_500;
+// techo de targetSummarySentences con holgura para verborragia del modelo.
+const SUMMARY_MAX_TOKENS = 3_000;
 
 function transcriptChunks(
   segments,
@@ -553,22 +566,24 @@ async function runSummaryJob(id, userId, template) {
     const targetSentences = targetSummarySentences(minutes);
     console.log(`[summarize] ${id}: ${minutes.toFixed(1)} min → objetivo ${targetSentences} frases`);
 
-    // Call A: resumen solo — su propio maxTokens para que el mapa multi-sección
-    // no le robe salida (en el call único el resumen quedaba en ~3 frases vagas
-    // para clases largas, pese al objetivo escalonado de frases).
+    // Call A: resumen solo, en TEXTO PLANO — su propio maxTokens para que el
+    // mapa multi-sección no le robe salida (en el call único el resumen
+    // quedaba en ~3 frases) y sin modo JSON, que con Groq devolvía 400
+    // "Failed to generate JSON" y el retry salía truncado.
     const summaryMessages = [
       { role: 'system', content: summarySystemPrompt(targetSentences) },
       { role: 'user', content: material },
     ];
     let rawSummary;
     try {
-      rawSummary = await openaiChat(summaryMessages, { json: true, maxTokens: SUMMARY_MAX_TOKENS });
+      rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
     } catch (e) {
       if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
-      console.warn('[summarize] JSON del resumen falló, reintento simple:', e.message.slice(0, 140));
+      console.warn('[summarize] call del resumen falló, reintento:', e.message.slice(0, 140));
+      await sleep(2000);
       rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
     }
-    const summaryText = str(parseJsonLoose(rawSummary).summary);
+    const summaryText = extractSummaryText(rawSummary);
     if (!summaryText) throw new Error('La IA no devolvió un resumen válido');
 
     // Call B: mindmap solo.
@@ -588,7 +603,7 @@ async function runSummaryJob(id, userId, template) {
       raw = await openaiChat(messages, { json: false, maxTokens: 4000 });
     }
 
-    const parsed = parseJsonLoose(raw);
+    const parsed = parseJsonLooseCtx(raw, 'JSON del mindmap inválido');
     const mindmap = normalizeMindmap(parsed.mindmap);
     if (!mindmap) throw new Error('La IA no devolvió un mapa de ideas válido');
     await saveSummary(id, userId, summaryText, mindmap);

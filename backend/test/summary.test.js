@@ -6,6 +6,7 @@ import {
   groupPartsForMerge,
   condenseToFit,
   summarySystemPrompt,
+  extractSummaryText,
 } from '../src/summary.js';
 
 test('targetSummarySentences aplica el piso de 6 frases', () => {
@@ -95,14 +96,36 @@ test('summarySystemPrompt pide el objetivo de frases escalonado', () => {
   assert.match(p, /aproximadamente 48\s+frases/);
 });
 
-test('summarySystemPrompt pide SOLO el summary en JSON', () => {
+test('summarySystemPrompt pide texto plano, sin JSON', () => {
   const p = summarySystemPrompt(24);
-  assert.match(p, /"summary":\s*string/);
-  assert.ok(!/"mindmap"/.test(p), 'el prompt del resumen no debe pedir mindmap');
+  assert.ok(!/"summary"/.test(p), 'sin schema JSON — el resumen sale como texto plano');
   assert.ok(!/sections|layout|topics/i.test(p), 'sin referencias al schema del mindmap');
+  assert.match(p, /sin JSON|texto puro|sin encabezados/i);
 });
 
 test('summarySystemPrompt prioriza cubrir todas las ideas', () => {
   const p = summarySystemPrompt(30);
   assert.match(p, /ideas principales/i);
+});
+
+// --- Extracción del resumen de la salida del LLM ---
+
+test('extractSummaryText usa texto plano tal cual', () => {
+  assert.equal(extractSummaryText('Un resumen de estudio. Segunda frase.'),
+    'Un resumen de estudio. Segunda frase.');
+});
+
+test('extractSummaryText rescata el campo summary si viene en JSON', () => {
+  assert.equal(extractSummaryText('{"summary": "Viene envuelto en JSON."}'),
+    'Viene envuelto en JSON.');
+});
+
+test('extractSummaryText rescata JSON dentro de fences markdown', () => {
+  assert.equal(extractSummaryText('```json\n{"summary": "Con fence."}\n```'),
+    'Con fence.');
+});
+
+test('extractSummaryText recorta fences de texto plano', () => {
+  assert.equal(extractSummaryText('```\nTexto con fence.\n```'),
+    'Texto con fence.');
 });
