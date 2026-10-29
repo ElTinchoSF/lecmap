@@ -7,6 +7,7 @@ import { mkdirSync } from 'fs';
 import jwt from 'jsonwebtoken';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import 'dotenv/config';
 import {
   createRecording,
@@ -19,8 +20,9 @@ import {
   updateTitle,
   resetInterrupted,
   deleteRecording,
+  recordingOwnsAudio,
 } from './db.js';
-import { removeAudioFile, cleanupOrphanAudio } from './cleanup.js';
+import { removeAudioFile, cleanupOrphanAudio, defaultUploadsDir } from './cleanup.js';
 import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
 
@@ -41,14 +43,28 @@ await app.register(cors, {
     if (!origin || allowedOrigins.has(origin)) return cb(null, true);
     cb(null, false);
   },
-  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  // PATCH es el renombrado de notas: sin él el preflight de la web falla.
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 });
-await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024 } });
+// MAX_UPLOAD_MB: 2h de clase a 32 kbps ≈ 28 MB; default holgado. Configurable
+// por entorno (Oracle puede subirlo, Render no debería pasar de 512 MB RAM).
+const MAX_UPLOAD_MB = Number(process.env.MAX_UPLOAD_MB || 200);
+await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 } });
 
 // Auth con Supabase: verificamos el JWT firmado con ES256 vía JWKS.
 // SUPABASE_URL = https://<project>.supabase.co (para buscar las claves públicas)
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
+// Fail-closed en producción: sin SUPABASE_URL la API quedaría abierta con
+// 'dev-user' para todos (antes pasaba silencioso). En dev sigue abierta.
+if (process.env.NODE_ENV === 'production' && !SUPABASE_URL) {
+  console.error(
+    '[config] NODE_ENV=production pero SUPABASE_URL está vacía. '
+    + 'El backend no arranca en producción sin autenticación: '
+    + 'configurá SUPABASE_URL o corré en modo dev (sin NODE_ENV=production).',
+  );
+  process.exit(1);
+}
 let jwks = null;
 if (SUPABASE_URL) {
   jwks = createRemoteJWKSet(new URL(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`));
@@ -98,7 +114,7 @@ const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 150_000);
 const now = () => new Date().toISOString();
 const id = () => Math.random().toString(36).slice(2, 10);
 
-const uploadsDir = path.resolve('uploads');
+const uploadsDir = defaultUploadsDir();
 mkdirSync(uploadsDir, { recursive: true });
 
 const MIME_BY_EXT = {
@@ -250,7 +266,23 @@ app.get('/health', async () => ({
   auth: jwks ? 'supabase' : 'none',
 }));
 
-app.post('/recordings', async (req) => {
+// Devuelve un mensaje de error si el audio subido no es válido, o null.
+// Extensión contra el catálogo de formatos soportados + tamaño máximo:
+// antes cualquier archivo entraba y el fallo recién aparecía en Groq.
+function audioUploadError(safeName, buf) {
+  const ext = path.extname(safeName).toLowerCase();
+  if (!MIME_BY_EXT[ext]) {
+    return `Formato de audio no soportado: ${ext || '(sin extensión)'}. `
+      + `Usá ${Object.keys(MIME_BY_EXT).join(', ')}.`;
+  }
+  if (buf.length === 0) return 'audio vacío';
+  if (buf.length > MAX_UPLOAD_MB * 1024 * 1024) {
+    return `El audio supera el máximo de ${MAX_UPLOAD_MB} MB. Grabá o comprimí menos audio por subida.`;
+  }
+  return null;
+}
+
+app.post('/recordings', async (req, reply) => {
   const ct = req.headers['content-type'] || '';
   let title = 'Grabación ' + new Date().toLocaleString('es-AR');
   let youtubeUrl = null;
@@ -260,8 +292,21 @@ app.post('/recordings', async (req) => {
     for await (const part of req.parts()) {
       if (part.type === 'field' && part.fieldname === 'title') title = String(part.value);
       if (part.type === 'file' && part.fieldname === 'audio') {
-        const buf = await part.toBuffer();
+        let buf;
+        try {
+          buf = await part.toBuffer();
+        } catch (e) {
+          // @fastify/multipart lanza al superar limits.fileSize (413).
+          if (e.code === 'FST_REQ_FILE_TOO_LARGE') {
+            return reply.code(413).send({
+              error: `El audio supera el máximo de ${MAX_UPLOAD_MB} MB.`,
+            });
+          }
+          throw e;
+        }
         const safeName = path.basename(part.filename || 'audio.webm').replace(/[^\w.\-]/g, '_');
+        const invalid = audioUploadError(safeName, buf);
+        if (invalid) return reply.code(400).send({ error: invalid });
         const fp = path.join(uploadsDir, `${id()}_${safeName}`);
         await writeFile(fp, buf);
         audioPath = fp;
@@ -287,13 +332,25 @@ app.post('/recordings/:id/audio', async (req, reply) => {
   try {
     part = await req.file();
   } catch (e) {
+    if (e.code === 'FST_REQ_FILE_TOO_LARGE') {
+      return reply.code(413).send({ error: `El audio supera el máximo de ${MAX_UPLOAD_MB} MB.` });
+    }
     return reply.code(400).send({ error: e.message });
   }
   if (!part) return reply.code(400).send({ error: 'falta el archivo de audio' });
 
-  const buf = await part.toBuffer();
-  if (buf.length === 0) return reply.code(400).send({ error: 'audio vacío' });
+  let buf;
+  try {
+    buf = await part.toBuffer();
+  } catch (e) {
+    if (e.code === 'FST_REQ_FILE_TOO_LARGE') {
+      return reply.code(413).send({ error: `El audio supera el máximo de ${MAX_UPLOAD_MB} MB.` });
+    }
+    throw e;
+  }
   const safeName = path.basename(part.filename || 'audio.webm').replace(/[^\w.\-]/g, '_');
+  const invalid = audioUploadError(safeName, buf);
+  if (invalid) return reply.code(400).send({ error: invalid });
   const fp = path.join(uploadsDir, `${id()}_${safeName}`);
   await writeFile(fp, buf);
   if (r.audioPath) await removeAudioFile(r.audioPath, req.log);
@@ -333,11 +390,46 @@ app.delete('/recordings/:id', async (req, reply) => {
   return { ok: true };
 });
 
-// Sirve el audio subido para el reproductor del cliente
+// Sirve el audio subido para el reproductor del cliente.
+// El elemento <audio> del navegador no puede mandar Authorization: acepta el
+// token por header o por ?token=. Sin jwks (modo dev) queda abierto como antes.
+async function resolveRequester(req, reply) {
+  if (!jwks) return 'dev-user';
+  const auth = req.headers.authorization || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+  const queryToken = typeof req.query?.token === 'string' ? req.query.token.trim() : '';
+  const token = bearer || queryToken;
+  if (!token) {
+    reply.header('WWW-Authenticate', 'Bearer');
+    reply.code(401).send({ error: 'Token de autenticación ausente' });
+    return null;
+  }
+  try {
+    const { payload } = await jwtVerify(token, jwks, {
+      issuer: `${SUPABASE_URL}/auth/v1`,
+      audience: 'authenticated',
+    });
+    return payload.sub;
+  } catch {
+    reply.header('WWW-Authenticate', 'Bearer');
+    reply.code(401).send({ error: 'Token de autenticación inválido o expirado' });
+    return null;
+  }
+}
+
 app.get('/files/:name', async (req, reply) => {
+  const requester = await resolveRequester(req, reply);
+  if (!requester) return reply; // ya respondió 401
+
   const name = path.basename(req.params.name);
   const fp = path.join(uploadsDir, name);
   if (!fp.startsWith(uploadsDir)) return reply.code(400).send({ error: 'invalid path' });
+
+  // Ownership: el archivo debe pertenecer a una nota del usuario que pide.
+  // 404 (no 403) para no revelar la existencia de archivos ajenos.
+  const owns = await recordingOwnsAudio(requester, fp);
+  if (!owns) return reply.code(404).send({ error: 'file not found' });
+
   try {
     const info = await stat(fp);
     reply.header('Content-Length', info.size);
@@ -648,10 +740,19 @@ app.post('/recordings/:id/ask', async (req, reply) => {
   }
 });
 
-const port = Number(process.env.PORT || 3001);
-await resetInterrupted();
-await cleanupOrphanAudio(app.log);
-setInterval(() => {
-  cleanupOrphanAudio(app.log).catch((e) => app.log.warn({ err: e }, 'cleanup de audios falló'));
-}, 6 * 60 * 60 * 1000).unref();
-await app.listen({ port, host: '0.0.0.0' });
+// Arranque real solo cuando somos el proceso principal (npm run dev/start).
+// Los tests importan la app y la prueban con inyect sin abrir puerto.
+const isMain = process.argv[1]
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMain) {
+  const port = Number(process.env.PORT || 3001);
+  await resetInterrupted();
+  await cleanupOrphanAudio(app.log);
+  setInterval(() => {
+    cleanupOrphanAudio(app.log).catch((e) => app.log.warn({ err: e }, 'cleanup de audios falló'));
+  }, 6 * 60 * 60 * 1000).unref();
+  await app.listen({ port, host: '0.0.0.0' });
+}
+
+export { app, isMain };

@@ -2,7 +2,9 @@ import { readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { listAudioPaths } from './db.js';
 
-export const defaultUploadsDir = () => path.resolve('uploads');
+// UPLOADS_DIR permite apuntar a un volumen montado (Oracle) o a un scratch
+// temporal en tests, sin tocar el código.
+export const defaultUploadsDir = () => path.resolve(process.env.UPLOADS_DIR || 'uploads');
 
 /**
  * Borra el audio de una grabación. Solo acepta rutas dentro de uploads/ y

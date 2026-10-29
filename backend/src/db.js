@@ -158,6 +158,19 @@ export async function updateTitle(id, userId, title) {
 }
 
 /**
+ * ¿El usuario es dueño de la nota que referencia este audio? Para
+ * GET /files/:name: el path guardado y el servido se construyen igual
+ * (uploadsDir + basename), así que basta igualdad exacta.
+ */
+export async function recordingOwnsAudio(userId, audioPath) {
+  const { rows } = await pool.query(
+    'SELECT id FROM recordings WHERE user_id = $1 AND audio_path = $2 LIMIT 1',
+    [userId, audioPath],
+  );
+  return rows.length > 0;
+}
+
+/**
  * Rutas de audio referenciadas por CUALQUIER nota. El limpiador de huérfanos
  * necesita ver todas las filas: filtrar por user_id (con userId undefined →
  * NULL) devolvía 0 filas y el cleanup borraba TODOS los audios de uploads/.

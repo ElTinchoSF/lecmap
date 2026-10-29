@@ -694,7 +694,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       ?.substringAfterLast('\\')
       ?.takeIf { it.isNotBlank() }
       ?: return null
-    return Net.normalize(serverUrl) + "files/" + name
+    // El reproductor no manda Authorization: el token viaja como query param.
+    val base = Net.normalize(serverUrl) + "files/" + name
+    return if (accessToken.isNotEmpty()) "$base?token=$accessToken" else base
   }
 
   private suspend fun awaitSummary(serverId: String): RecordingDto = withContext(Dispatchers.IO) {

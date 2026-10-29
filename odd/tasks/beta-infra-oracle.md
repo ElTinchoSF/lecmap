@@ -49,7 +49,7 @@ Aceptación: no se implementa en esta feature; queda registrado en ## Log.
 
 | ID | Specs | Ruta | Estado | Commit / evidencia |
 |----|-------|------|--------|--------------------|
-| T1 | S6a | inline | ⬜ pendiente | fix limpiador + test |
+| T1 | S6a | inline | ✅ hecho | commit `8188f32`: RED reproducido (audio referenciado borrado, ENOENT) → GREEN 39/39 con Postgres Docker efímero; `cleanup.js` extraído, `closePool()` agregado |
 | T2 | S6b, S6c, S6d, S6e | inline | ⬜ pendiente | auth fail-open, CORS PATCH, ownership /files, validación upload |
 | T3 | S2 | inline | ⬜ pendiente | VM A1 en Oracle (VCN + instancia + Docker) vía oci/SSH |
 | T4 | S4 | inline | ⬜ pendiente | worker Python (faster-whisper + diarize) desplegado en la VM, API interna |

@@ -669,9 +669,12 @@ function MindmapView({ mm }: { mm: unknown }) {
   );
 }
 
-function serverAudioUrl(audioPath?: string | null): string | null {
+/** El <audio> no puede mandar Authorization: el token viaja como query param. */
+async function serverAudioUrl(audioPath?: string | null): Promise<string | null> {
   if (!audioPath) return null;
-  return `${API}/files/${audioPath.split(/[\\/]/).pop()}`;
+  const base = `${API}/files/${audioPath.split(/[\\/]/).pop()}`;
+  const token = await getAccessToken();
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
 
 /** El backend resume en segundo plano (202). Esperamos a que termine. */
@@ -901,7 +904,7 @@ export default function App() {
         return;
       }
     }
-    setAudioUrl(serverAudioUrl(note.audioPath));
+    setAudioUrl(await serverAudioUrl(note.audioPath));
   };
 
   const toggleRec = async () => {
