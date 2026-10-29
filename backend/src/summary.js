@@ -71,6 +71,7 @@ export function summarySystemPrompt(targetSentences) {
     + 'Respondé SOLO con el texto del resumen: sin JSON, sin encabezados, sin preámbulo y sin comillas alrededor. '
     + 'El resumen debe tener aproximadamente ' + targetSentences
     + ' frases; priorizá cubrir todas las ideas principales antes que acortar. '
+    + 'Si el material incluye tareas o consignas, incluilo en el resumen con su fecha límite. '
     + 'No repitas ideas y no inventes contenido ausente.';
 }
 
@@ -89,3 +90,21 @@ export function extractSummaryText(raw) {
   } catch { /* no es JSON: el unfenced es el resumen */ }
   return unfenced;
 }
+
+// Extracción por bloques. Los marcadores "Ejemplo:" y "Tarea:" (con fecha
+// límite si el docente la menciona) sobreviven la condensación y el mindmap.
+export const CHUNK_SYSTEM_PROMPT =
+  'Sos un asistente que resume clases en español. Devolvé SOLO JSON con esta forma: '
+  + '{"summary": string, "points": [string]}. '
+  + 'El summary debe tener 2 o 3 frases. En points poné hasta 6 ideas concretas del fragmento '
+  + '(datos, definiciones, ejemplos, conclusiones). No inventes contenido que no esté en el texto. '
+  + 'Marcá los ejemplos que da el docente empezando el punto con "Ejemplo:" y las tareas o '
+  + 'consignas con "Tarea:" incluyendo la fecha límite si la menciona.';
+
+// Condensación jerárquica: debe preservar los marcadores de consignas.
+export const MERGE_SYSTEM_PROMPT =
+  'Sos un asistente que condensa resúmenes de fragmentos de una clase. Reescribí un texto compacto '
+  + 'en español que conserve TODOS los hechos, definiciones, fórmulas, ejemplos, nombres, tareas, '
+  + 'fechas límite y conclusiones de los fragmentos —incluidos los puntos que empiezan con '
+  + '"Ejemplo:" y "Tarea:"—, sin inventar nada y sin repetirte. '
+  + 'Sin encabezados ni preámbulo: sólo el contenido condensado.';

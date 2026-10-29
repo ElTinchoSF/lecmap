@@ -7,6 +7,8 @@ import {
   condenseToFit,
   summarySystemPrompt,
   extractSummaryText,
+  CHUNK_SYSTEM_PROMPT,
+  MERGE_SYSTEM_PROMPT,
 } from '../src/summary.js';
 
 test('targetSummarySentences aplica el piso de 6 frases', () => {
@@ -128,4 +130,24 @@ test('extractSummaryText rescata JSON dentro de fences markdown', () => {
 test('extractSummaryText recorta fences de texto plano', () => {
   assert.equal(extractSummaryText('```\nTexto con fence.\n```'),
     'Texto con fence.');
+});
+
+// --- Consignas del docente: ejemplos, tareas y fechas límite ---
+
+test('summarySystemPrompt pide incluir tareas y fechas límite', () => {
+  const p = summarySystemPrompt(30);
+  assert.match(p, /fecha límite/i);
+  assert.match(p, /tarea|tareas/i);
+});
+
+test('CHUNK_SYSTEM_PROMPT marca ejemplos y tareas con fecha', () => {
+  assert.match(CHUNK_SYSTEM_PROMPT, /Ejemplo:/);
+  assert.match(CHUNK_SYSTEM_PROMPT, /Tarea:/);
+  assert.match(CHUNK_SYSTEM_PROMPT, /fecha límite/i);
+});
+
+test('MERGE_SYSTEM_PROMPT preserva marcadores de ejemplo y tarea', () => {
+  assert.match(MERGE_SYSTEM_PROMPT, /Ejemplo:/);
+  assert.match(MERGE_SYSTEM_PROMPT, /Tarea:/);
+  assert.match(MERGE_SYSTEM_PROMPT, /fechas límite|fecha límite/i);
 });

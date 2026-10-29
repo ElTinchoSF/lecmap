@@ -127,3 +127,16 @@ test('mindmapSystemPrompt ya no pide el summary (sale en call dedicado)', () => 
   assert.ok(!/"summary"/.test(p), 'el schema del mindmap no debe incluir summary');
   assert.ok(!/El summary debe ser/.test(p), 'el objetivo de frases vive en summarySystemPrompt');
 });
+
+test('mindmapSystemPrompt refuerza la fragmentación por tema central', () => {
+  const p = mindmapSystemPrompt('general');
+  assert.match(p, /dos temas centrales/);
+  assert.match(p, /secciones acotadas|partil[oa] en varias/i);
+});
+
+test('mindmapSystemPrompt etiqueta ejemplos y arma Trabajos y consignas', () => {
+  const p = mindmapSystemPrompt('general');
+  assert.match(p, /Ejemplo:/);
+  assert.match(p, /Trabajos y consignas/);
+  assert.match(p, /fecha límite/i);
+});
