@@ -21,7 +21,7 @@ import {
   resetInterrupted,
   deleteRecording,
 } from './db.js';
-import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
+import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
 
 const app = Fastify({ logger: true });
@@ -298,9 +298,6 @@ function parseJsonLooseCtx(text, ctx) {
   }
 }
 
-const str = (v) => (v === undefined || v === null ? '' : String(v).trim());
-const strList = (v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
-
 app.get('/health', async () => ({
   ok: true,
   openai: !!OPENAI_KEY,
@@ -488,16 +485,18 @@ async function summarizeChunk(chunk, index, total) {
     { role: 'system', content: CHUNK_SYSTEM_PROMPT },
     { role: 'user', content: `Fragmento ${index + 1} de ${total}:\n\n${chunk}` },
   ];
+  // Texto plano siempre: el modo JSON de Groq fallaba con 400 "Failed to
+  // generate JSON" y los retries no alcanzaban para clases largas.
   let raw;
   try {
-    raw = await openaiChat(messages, { json: true, maxTokens: 700 });
+    raw = await openaiChat(messages, { json: false, maxTokens: 700 });
   } catch (e) {
-    if (/413|429|demasiado grande/i.test(e.message)) throw e;
-    console.warn(`[summarize] bloque ${index + 1} JSON falló, reintento simple:`, e.message.slice(0, 140));
+    if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
+    console.warn(`[summarize] bloque ${index + 1} falló, reintento:`, e.message.slice(0, 140));
+    await sleep(2000);
     raw = await openaiChat(messages, { json: false, maxTokens: 700 });
   }
-  const parsed = parseJsonLoose(raw);
-  return { summary: str(parsed.summary), points: strList(parsed.points) };
+  return parseChunkText(raw);
 }
 
 /** Si un bloque igual es demasiado grande, lo parte al medio y reintenta. */
