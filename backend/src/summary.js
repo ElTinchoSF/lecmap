@@ -91,15 +91,46 @@ export function extractSummaryText(raw) {
   return unfenced;
 }
 
-// Extracción por bloques. Los marcadores "Ejemplo:" y "Tarea:" (con fecha
+// Extracción por bloques en TEXTO PLANO — el modo JSON de Groq con
+// gpt-oss-120b devolvía 400 "Failed to generate JSON" en los chunks y los
+// retries no alcanzaban. Los marcadores "Ejemplo:" y "Tarea:" (con fecha
 // límite si el docente la menciona) sobreviven la condensación y el mindmap.
 export const CHUNK_SYSTEM_PROMPT =
-  'Sos un asistente que resume clases en español. Devolvé SOLO JSON con esta forma: '
-  + '{"summary": string, "points": [string]}. '
-  + 'El summary debe tener 2 o 3 frases. En points poné hasta 6 ideas concretas del fragmento '
-  + '(datos, definiciones, ejemplos, conclusiones). No inventes contenido que no esté en el texto. '
-  + 'Marcá los ejemplos que da el docente empezando el punto con "Ejemplo:" y las tareas o '
+  'Sos un asistente que resume clases en español. Respondé SOLO con texto en esta forma exacta, '
+  + 'sin JSON y sin encabezados extra:\n'
+  + 'Resumen: dos o tres frases con las ideas principales del fragmento.\n'
+  + '- una idea concreta por línea, hasta 6 ideas (datos, definiciones, ejemplos, conclusiones).\n'
+  + 'No inventes contenido que no esté en el texto. '
+  + 'Marcá los ejemplos que da el docente empezando la idea con "Ejemplo:" y las tareas o '
   + 'consignas con "Tarea:" incluyendo la fecha límite si la menciona.';
+
+// Parsea la salida del bloque: viñetas (-, *, •, 1.) = points; el resto
+// (incluida la línea "Resumen:") = summary. Tolera fences markdown y salida
+// truncada (las líneas incompletas que no empiezan con viñeta van al summary).
+export function parseChunkText(raw) {
+  const text = String(raw || '')
+    .replace(/^```(?:text)?\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const points = [];
+  const summaryLines = [];
+  for (const line of lines) {
+    const bullet = line.match(/^(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (bullet) {
+      if (points.length < 8) points.push(bullet[1].trim());
+    } else if (/^resumen:/i.test(line)) {
+      summaryLines.push(line.replace(/^resumen:\s*/i, ''));
+    } else {
+      summaryLines.push(line);
+    }
+  }
+  const summary = summaryLines.join(' ').trim();
+  if (!summary && points.length === 0) {
+    throw new Error('La IA no devolvió contenido legible para el bloque');
+  }
+  return { summary, points: points.filter(Boolean) };
+}
 
 // Condensación jerárquica: debe preservar los marcadores de consignas.
 export const MERGE_SYSTEM_PROMPT =

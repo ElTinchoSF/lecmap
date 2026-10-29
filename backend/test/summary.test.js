@@ -9,6 +9,7 @@ import {
   extractSummaryText,
   CHUNK_SYSTEM_PROMPT,
   MERGE_SYSTEM_PROMPT,
+  parseChunkText,
 } from '../src/summary.js';
 
 test('targetSummarySentences aplica el piso de 6 frases', () => {
@@ -144,6 +145,34 @@ test('CHUNK_SYSTEM_PROMPT marca ejemplos y tareas con fecha', () => {
   assert.match(CHUNK_SYSTEM_PROMPT, /Ejemplo:/);
   assert.match(CHUNK_SYSTEM_PROMPT, /Tarea:/);
   assert.match(CHUNK_SYSTEM_PROMPT, /fecha límite/i);
+});
+
+test('CHUNK_SYSTEM_PROMPT pide texto plano (sin JSON)', () => {
+  assert.match(CHUNK_SYSTEM_PROMPT, /Resumen:/);
+  assert.ok(!/"points"|JSON con esta forma/.test(CHUNK_SYSTEM_PROMPT), 'sin schema JSON');
+});
+
+test('parseChunkText extrae resumen y viñetas del formato plano', () => {
+  const out = parseChunkText(
+    'Resumen: La clase expone el marco general. Se ven ejemplos.\n'
+    + '- Idea uno\n'
+    + '- Ejemplo: caso práctico del docente\n'
+    + '- Tarea: entregar informe — fecha límite 15/12',
+  );
+  assert.equal(out.summary, 'La clase expone el marco general. Se ven ejemplos.');
+  assert.equal(out.points.length, 3);
+  assert.equal(out.points[1], 'Ejemplo: caso práctico del docente');
+  assert.match(out.points[2], /15\/12/);
+});
+
+test('parseChunkText tolera fences y viñetas con bullets variados', () => {
+  const out = parseChunkText('```text\nResumen: Un fragmento corto.\n* punto estrella\n• otro punto\n```');
+  assert.equal(out.summary, 'Un fragmento corto.');
+  assert.deepEqual(out.points, ['punto estrella', 'otro punto']);
+});
+
+test('parseChunkText lanza con salida ilegible', () => {
+  assert.throws(() => parseChunkText('   \n  '), /legible|contenido/i);
 });
 
 test('MERGE_SYSTEM_PROMPT preserva marcadores de ejemplo y tarea', () => {
