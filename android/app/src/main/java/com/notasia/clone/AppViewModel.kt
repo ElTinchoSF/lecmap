@@ -467,7 +467,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) { api.uploadAudio(serverId, part) }
           }
         }
-        val detail = withContext(Dispatchers.IO) { api.transcribe(serverId) }
+        // 202: la cola procesa en background; esperamos los segmentos.
+        awaitTranscribe(serverId)
+        val detail = withContext(Dispatchers.IO) { api.get(serverId) }
         store.updateFromServer(serverId, detail)
         selected = store.findByServerId(serverId)?.let { detail.withLocal(it) } ?: detail
         refresh()
@@ -553,7 +555,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
               throw IllegalStateException("No hay audio disponible para transcribir")
             }
           }
-          current = withContext(Dispatchers.IO) { api.transcribe(serverId) }
+          // 202: la cola procesa en background; esperamos los segmentos.
+          awaitTranscribe(serverId)
+          current = withContext(Dispatchers.IO) { api.get(serverId) }
           store.updateFromServer(serverId, current)
           selected = current
         }
@@ -712,6 +716,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       if (!isServerProcessing(d.status)) return@withContext d
     }
     throw IllegalStateException("El resumen está tardando demasiado. Probá de nuevo en unos minutos.")
+  }
+
+  /**
+   * La transcripción corre en la cola del backend (202): esperamos a que
+   * tenga segmentos. Timeout 90 min — 2 h de audio en la VM pueden tardar.
+   */
+  private suspend fun awaitTranscribe(serverId: String): RecordingDto = withContext(Dispatchers.IO) {
+    val deadline = System.currentTimeMillis() + 90 * 60_000
+    while (System.currentTimeMillis() < deadline) {
+      delay(3000)
+      val d = api.get(serverId)
+      if (d.status == "error") throw IllegalStateException(d.error ?: "No se pudo transcribir")
+      if (!d.transcript.isNullOrEmpty()) return@withContext d
+    }
+    throw IllegalStateException("La transcripción está tardando demasiado. Revisá la nota más tarde.")
   }
 
   private fun merge(locals: List<LocalNote>, server: List<RecordingDto>): List<RecordingDto> {

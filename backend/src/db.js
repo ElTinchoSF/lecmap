@@ -10,6 +10,8 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });
+// Exportado para tests (simular locks stale) y para tareas directas.
+export { pool };
 
 // ---------- recordings ----------
 
@@ -186,16 +188,139 @@ export async function deleteRecording(id, userId) {
   await pool.query('DELETE FROM recordings WHERE id = $1 AND user_id = $2', [id, userId]);
 }
 
-/** Al arrancar, las notas que quedaron a mitad de análisis pasan a error. */
-export async function resetInterrupted() {
+/**
+ * Al arrancar: (1) reencola los trabajos que corrían en ESTA instancia (la
+ * anterior murió con ellos); (2) marca error las notas interrumpidas que NO
+ * tienen job activo — las que tienen, el runner las retoma solo.
+ */
+export async function resetInterrupted(hostnamePrefix) {
+  if (hostnamePrefix) {
+    await pool.query(
+      `UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL,
+         updated_at = now()
+       WHERE status = 'running' AND locked_by LIKE $1 || ':%'`,
+      [hostnamePrefix],
+    );
+  }
   await pool.query(
     `UPDATE recordings SET status = 'error',
      error = 'El análisis se interrumpió (el servidor se reinició). Volvé a intentarlo.'
-     WHERE status IN ('transcribing', 'summarizing')`,
+     WHERE status IN ('transcribing', 'summarizing')
+       AND NOT EXISTS (
+         SELECT 1 FROM jobs j
+         WHERE j.recording_id = recordings.id
+           AND j.status IN ('queued', 'running')
+       )`,
   );
 }
 
 /** Cierra el pool (tests y shutdown ordenado). */
 export async function closePool() {
   await pool.end();
+}
+
+// ---------- cola de trabajos (transcribe | summarize) ----------
+
+export const JOB_MAX_ATTEMPTS = Number(process.env.JOB_MAX_ATTEMPTS || 3);
+export const JOB_STALE_MIN = Number(process.env.JOB_STALE_MIN || 10);
+
+/**
+ * Encola un trabajo para una nota. Dedupe: si ya hay uno activo del mismo
+ * tipo para la misma nota, devuelve ese (índice único parcial).
+ */
+export async function enqueueJob({ recordingId, userId, kind, params = null }) {
+  const id = Math.random().toString(36).slice(2, 10)
+    + Math.random().toString(36).slice(2, 10);
+  const { rows } = await pool.query(
+    `INSERT INTO jobs (id, recording_id, user_id, kind, params)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (recording_id, kind) WHERE status IN ('queued', 'running')
+     DO UPDATE SET updated_at = now()
+     RETURNING *`,
+    [id, recordingId, userId, kind, params ? JSON.stringify(params) : null],
+  );
+  return rows[0];
+}
+
+/**
+ * Reclama el próximo trabajo disponible del tipo dado (SKIP LOCKED: seguro
+ * con varias instancias). Los locks viejos (instancia muerta) se toman como
+ * disponibles.
+ */
+export async function claimJob(kind, workerId) {
+  const { rows } = await pool.query(
+    `UPDATE jobs SET
+       status = 'running', locked_by = $1, locked_at = now(),
+       attempts = attempts + 1, updated_at = now()
+     WHERE id = (
+       SELECT id FROM jobs
+       WHERE kind = $2
+         AND available_at <= now()
+         AND (status = 'queued'
+           OR (status = 'running'
+               AND locked_at < now() - make_interval(mins => $3)))
+       ORDER BY created_at
+       FOR UPDATE SKIP LOCKED
+       LIMIT 1
+     )
+     RETURNING *`,
+    [workerId, kind, JOB_STALE_MIN],
+  );
+  return rows[0] || null;
+}
+
+/** Trabajo completado: done, sin lock. */
+export async function finishJob(id) {
+  const { rows } = await pool.query(
+    `UPDATE jobs SET status = 'done', locked_by = NULL, locked_at = NULL,
+       error = NULL, updated_at = now()
+     WHERE id = $1 RETURNING *`,
+    [id],
+  );
+  return rows[0];
+}
+
+/**
+ * Fallo de trabajo: si quedan intentos vuelve a la cola (backoff simple),
+ * si no queda pasa a error. Solo el dueño del lock puede marcarlo.
+ */
+export async function failJob(id, error, workerId) {
+  const { rows } = await pool.query(
+    `UPDATE jobs SET
+       status = CASE WHEN attempts >= $2 THEN 'error' ELSE 'queued' END,
+       error = $3,
+       locked_by = NULL,
+       locked_at = NULL,
+       available_at = now() + make_interval(mins => attempts),
+       updated_at = now()
+     WHERE id = $1 AND locked_by = $4
+     RETURNING *`,
+    [id, JOB_MAX_ATTEMPTS, String(error || 'error').slice(0, 500), workerId],
+  );
+  if (rows[0]) return rows[0];
+  // Sin lock propio (stale takeover u otro worker): se queda como está.
+  const cur = await pool.query('SELECT * FROM jobs WHERE id = $1', [id]);
+  return cur.rows[0];
+}
+
+/** Trabajo activo (queued/running) de una nota, o null. */
+export async function activeJob(recordingId, kind) {
+  const { rows } = await pool.query(
+    `SELECT * FROM jobs WHERE recording_id = $1 AND kind = $2
+     AND status IN ('queued', 'running') LIMIT 1`,
+    [recordingId, kind],
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Heartbeat mientras un trabajo corre: refresca locked_at para que otro no lo
+ * reclame como stale. Indispensable: una transcripción de 2 h excede con creces
+ * JOB_STALE_MIN.
+ */
+export async function heartbeatJob(id, workerId) {
+  await pool.query(
+    'UPDATE jobs SET locked_at = now() WHERE id = $1 AND locked_by = $2',
+    [id, workerId],
+  );
 }

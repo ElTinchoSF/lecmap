@@ -693,6 +693,25 @@ async function waitForSummary(serverId: string, timeoutMs = 12 * 60 * 1000): Pro
   }
 }
 
+/**
+ * La transcripción corre en la cola (202). Esperamos a que tenga segmentos.
+ * Timeout generoso: 2 h de audio en la VM pueden tardar ~90 min.
+ */
+async function waitForTranscribe(serverId: string, timeoutMs = 90 * 60 * 1000): Promise<Recording> {
+  const start = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const res = await apiFetch(`/recordings/${serverId}`);
+    if (!res.ok) throw new Error(`No se pudo consultar la transcripción (HTTP ${res.status})`);
+    const detail: Recording = await res.json();
+    if (detail.transcript.length > 0) return detail;
+    if (detail.status === 'error') throw new Error(detail.error || 'No se pudo transcribir');
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('La transcripción está tardando demasiado. Revisá la nota más tarde.');
+    }
+  }
+}
+
 function localMatches(local: LocalNote, q: string): boolean {
   const needle = q.trim().toLowerCase();
   if (!needle) return true;
@@ -1139,7 +1158,9 @@ export default function App() {
           try { msg = JSON.parse(body)?.error || body; } catch { /* cuerpo no JSON */ }
           throw new Error(msg || `Error al transcribir (HTTP ${r.status})`);
         }
-        detail = await r.json();
+        // 202: la cola procesa en background; esperamos los segmentos.
+        setServerNotes((prev) => prev.map((s) => (s.id === serverId ? { ...s, status: 'transcribing', error: undefined } : s)));
+        detail = await waitForTranscribe(serverId);
       }
 
       if (!transcribeOnly && (!note.summary || needsTranscribe)) {

@@ -27,6 +27,26 @@ CREATE TABLE segments (
   text text NOT NULL,
   PRIMARY KEY (recording_id, idx)
 );
+-- Espejo de supabase/migrations/002_jobs.sql
+CREATE TABLE jobs (
+  id text PRIMARY KEY,
+  recording_id text NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL,
+  kind text NOT NULL,
+  params jsonb,
+  status text NOT NULL DEFAULT 'queued',
+  error text,
+  attempts integer NOT NULL DEFAULT 0,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  locked_by text,
+  locked_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX idx_jobs_active
+  ON jobs (recording_id, kind)
+  WHERE status IN ('queued', 'running');
+CREATE INDEX idx_jobs_claim ON jobs (kind, status, available_at);
 `;
 
 async function waitForPg(dbUrl, retries = 30) {

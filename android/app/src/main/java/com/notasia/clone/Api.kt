@@ -79,8 +79,8 @@ interface Api {
     @Part audio: MultipartBody.Part,
   ): RecordingDto
 
-  @POST("recordings/{id}/transcribe")
-  suspend fun transcribe(@Path("id") id: String): RecordingDto
+  // NOTA: POST /transcribe responde 202 (encolado); el cliente espera con
+  // awaitTranscribe haciendo polling a GET. No hay llamada síncrona.
 
   @POST("recordings/{id}/summarize")
   suspend fun summarize(@Path("id") id: String, @Body body: SummarizeReq): RecordingDto

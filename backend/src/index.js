@@ -21,7 +21,10 @@ import {
   resetInterrupted,
   deleteRecording,
   recordingOwnsAudio,
+  enqueueJob,
+  activeJob,
 } from './db.js';
+import { startRunner, HOSTNAME } from './jobs.js';
 import { removeAudioFile, cleanupOrphanAudio, defaultUploadsDir } from './cleanup.js';
 import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
@@ -105,6 +108,12 @@ const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_BASE = process.env.OPENAI_BASE_URL || 'https://api.groq.com/openai/v1';
 const STT_MODEL = process.env.STT_MODEL || 'whisper-large-v3';
 const CHAT_MODEL = process.env.CHAT_MODEL || 'openai/gpt-oss-120b';
+// Worker de transcripción propio (Oracle): STT + diarización de speakers.
+// Si WORKER_URL no está, se cae a Groq (dev local sin worker).
+const WORKER_URL = (process.env.WORKER_URL || '').replace(/\/$/, '');
+const WORKER_TOKEN = process.env.WORKER_TOKEN || '';
+// 2 h de audio en la VM (2 OCPU) puede tardar hasta ~90 min con cola.
+const WORKER_TIMEOUT_MS = Number(process.env.WORKER_TIMEOUT_MS || 10_800_000);
 // Timeouts de Groq: sin signal, un request colgado deja la llamada HTTP abierta
 // para siempre (y al usuario esperando). Debajo del read timeout de Android
 // (180 s). Ver .env.example.
@@ -444,33 +453,16 @@ app.get('/files/:name', async (req, reply) => {
 app.post('/recordings/:id/transcribe', async (req, reply) => {
   const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
-  if (!OPENAI_KEY) return reply.code(500).send({ error: 'OPENAI_API_KEY no configurada' });
+  if (!WORKER_URL && !OPENAI_KEY) {
+    return reply.code(500).send({ error: 'WORKER_URL u OPENAI_API_KEY no configuradas' });
+  }
   if (!r.audioPath) return reply.code(400).send({ error: 'sin audio subido' });
 
   await setStatus(r.id, req.userId, 'transcribing');
-  try {
-    const result = await openaiTranscribe(r.audioPath);
-    const segments = (result.segments || []).map((s, i) => ({
-      start: s.start,
-      end: s.end,
-      speaker: `SPEAKER_${String(i % 2).padStart(2, '0')}`,
-      text: s.text.trim(),
-    }));
-    const saved = await saveTranscript(r.id, req.userId, segments);
-    // La transcripción ya está en la base: el servidor no necesita conservar el
-    // audio. El cliente mantiene su copia local para reproducir la clase.
-    await removeAudioFile(r.audioPath, req.log);
-    await setAudioPath(r.id, req.userId, null);
-    return { ...saved, audioPath: null };
-  } catch (e) {
-    console.error('[transcribe] error:', e.message);
-    await setStatus(r.id, req.userId, 'error', e.message);
-    // Error real = status 5xx (nunca 200): los clientes chequean r.ok y hoy el
-    // fallo pasaba silencioso. El estado de la nota ya quedó en 'error'.
-    return reply
-      .code(e.upstream ? 502 : 500)
-      .send({ id: r.id, status: 'error', error: e.message });
-  }
+  // Encolado: la transcripción corre en background (cola en DB con reintentos).
+  // El cliente consulta GET /recordings/:id hasta ready/error.
+  await enqueueJob({ recordingId: r.id, userId: req.userId, kind: 'transcribe' });
+  return reply.code(202).send({ id: r.id, status: 'transcribing' });
 });
 
 // ---------- Resumen de clases largas ----------
@@ -478,7 +470,6 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
 // de 35 min no entra en un solo pedido: partimos la transcripción, resumimos
 // cada bloque y hacemos una síntesis final con el mapa de ideas.
 
-const summaryJobs = new Set();
 const MAX_CHUNK_CHARS = 10_000;
 // Presupuesto del material que llega a los calls finales. paceChat rechaza
 // pedidos estimados en > 7000 tokens (TPM_BUDGET). El resumen y el mindmap se
@@ -562,84 +553,81 @@ async function condensePartsChunk(text, index, total) {
   return String(raw || '').trim() || text;
 }
 
+/**
+ * Resumen de fondo. Errores → se lanzan al runner de jobs (reintentos con
+ * backoff; al agotar, onFailed deja la nota en error).
+ */
 async function runSummaryJob(id, userId, template) {
-  try {
-    const r = await getRecording(id, userId);
-    if (!r) return;
-    const chunks = transcriptChunks(r.transcript);
-    if (chunks.length === 0) throw new Error('La grabación no tiene transcripción');
+  const r = await getRecording(id, userId);
+  if (!r) return; // la nota se borró en el medio
+  const chunks = transcriptChunks(r.transcript);
+  if (chunks.length === 0) throw new Error('La grabación no tiene transcripción');
 
-    const parts = [];
-    for (let i = 0; i < chunks.length; i++) {
-      const results = await summarizeChunkSafe(chunks[i], i, chunks.length);
-      for (const part of results) {
-        parts.push(
-          `Fragmento ${i + 1}:\nResumen: ${part.summary}\nPuntos:\n${part.points.map((p) => `- ${p}`).join('\n')}`,
-        );
-      }
+  const parts = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const results = await summarizeChunkSafe(chunks[i], i, chunks.length);
+    for (const part of results) {
+      parts.push(
+        `Fragmento ${i + 1}:\nResumen: ${part.summary}\nPuntos:\n${part.points.map((p) => `- ${p}`).join('\n')}`,
+      );
     }
-    // Condensación jerárquica: ninguna parte se descarta. Si el material
-    // supera el presupuesto del call final, condensamos lotes y volvemos a
-    // intentar — el final de la clase siempre llega al modelo.
-    const { material, rounds } = await condenseToFit(
-      parts,
-      condensePartsChunk,
-      FINAL_MATERIAL_MAX_CHARS,
-    );
-    if (rounds > 0) console.log(`[summarize] ${id}: material condensado en ${rounds} ronda(s)`);
-
-    const minutes = transcriptDurationSeconds(r.transcript) / 60;
-    const targetSentences = targetSummarySentences(minutes);
-    console.log(`[summarize] ${id}: ${minutes.toFixed(1)} min → objetivo ${targetSentences} frases`);
-
-    // Call A: resumen solo, en TEXTO PLANO — su propio maxTokens para que el
-    // mapa multi-sección no le robe salida (en el call único el resumen
-    // quedaba en ~3 frases) y sin modo JSON, que con Groq devolvía 400
-    // "Failed to generate JSON" y el retry salía truncado.
-    const summaryMessages = [
-      { role: 'system', content: summarySystemPrompt(targetSentences) },
-      { role: 'user', content: material },
-    ];
-    let rawSummary;
-    try {
-      rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
-    } catch (e) {
-      if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
-      console.warn('[summarize] call del resumen falló, reintento:', e.message.slice(0, 140));
-      await sleep(2000);
-      rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
-    }
-    const summaryText = extractSummaryText(rawSummary);
-    if (!summaryText) throw new Error('La IA no devolvió un resumen válido');
-
-    // Call B: mindmap solo.
-    const messages = [
-      { role: 'system', content: mindmapSystemPrompt(template) },
-      { role: 'user', content: material },
-    ];
-
-    let raw;
-    try {
-      raw = await openaiChat(messages, { json: true, maxTokens: 4000 });
-    } catch (e) {
-      // 413/429: reintentar con menos texto ayuda. Timeout: el reintento solo
-      // duplica la espera, así que se propaga al catch del job.
-      if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
-      console.warn('[summarize] JSON del mindmap falló, reintento simple:', e.message.slice(0, 140));
-      raw = await openaiChat(messages, { json: false, maxTokens: 4000 });
-    }
-
-    const parsed = parseJsonLooseCtx(raw, 'JSON del mindmap inválido');
-    const mindmap = normalizeMindmap(parsed.mindmap);
-    if (!mindmap) throw new Error('La IA no devolvió un mapa de ideas válido');
-    await saveSummary(id, userId, summaryText, mindmap);
-    console.log(`[summarize] ${id} listo (${chunks.length} bloque/s)`);
-  } catch (e) {
-    console.error(`[summarize] ${id} error:`, e.message);
-    await setStatus(id, userId, 'error', `No se pudo resumir: ${e.message}`);
-  } finally {
-    summaryJobs.delete(id);
   }
+  // Condensación jerárquica: ninguna parte se descarta. Si el material
+  // supera el presupuesto del call final, condensamos lotes y volvemos a
+  // intentar — el final de la clase siempre llega al modelo.
+  const { material, rounds } = await condenseToFit(
+    parts,
+    condensePartsChunk,
+    FINAL_MATERIAL_MAX_CHARS,
+  );
+  if (rounds > 0) console.log(`[summarize] ${id}: material condensado en ${rounds} ronda(s)`);
+
+  const minutes = transcriptDurationSeconds(r.transcript) / 60;
+  const targetSentences = targetSummarySentences(minutes);
+  console.log(`[summarize] ${id}: ${minutes.toFixed(1)} min → objetivo ${targetSentences} frases`);
+
+  // Call A: resumen solo, en TEXTO PLANO — su propio maxTokens para que el
+  // mapa multi-sección no le robe salida (en el call único el resumen
+  // quedaba en ~3 frases) y sin modo JSON, que con Groq devolvía 400
+  // "Failed to generate JSON" y el retry quedaba truncado.
+  const summaryMessages = [
+    { role: 'system', content: summarySystemPrompt(targetSentences) },
+    { role: 'user', content: material },
+  ];
+  let rawSummary;
+  try {
+    rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
+  } catch (e) {
+    if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
+    console.warn('[summarize] call del resumen falló, reintento:', e.message.slice(0, 140));
+    await sleep(2000);
+    rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
+  }
+  const summaryText = extractSummaryText(rawSummary);
+  if (!summaryText) throw new Error('La IA no devolvió un resumen válido');
+
+  // Call B: mindmap solo.
+  const messages = [
+    { role: 'system', content: mindmapSystemPrompt(template) },
+    { role: 'user', content: material },
+  ];
+
+  let raw;
+  try {
+    raw = await openaiChat(messages, { json: true, maxTokens: 4000 });
+  } catch (e) {
+    // 413/429: reintentar con menos texto ayuda. Timeout: el reintento solo
+    // duplica la espera, así que se propaga al runner (reintentos con backoff).
+    if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
+    console.warn('[summarize] JSON del mindmap falló, reintento simple:', e.message.slice(0, 140));
+    raw = await openaiChat(messages, { json: false, maxTokens: 4000 });
+  }
+
+  const parsed = parseJsonLooseCtx(raw, 'JSON del mindmap inválido');
+  const mindmap = normalizeMindmap(parsed.mindmap);
+  if (!mindmap) throw new Error('La IA no devolvió un mapa de ideas válido');
+  await saveSummary(id, userId, summaryText, mindmap);
+  console.log(`[summarize] ${id} listo (${chunks.length} bloque/s)`);
 }
 
 app.post('/recordings/:id/summarize', async (req, reply) => {
@@ -649,13 +637,12 @@ app.post('/recordings/:id/summarize', async (req, reply) => {
   if (!r.transcript.length) return reply.code(400).send({ error: 'La grabación no tiene transcripción' });
 
   const template = req.body?.template || 'general';
-  if (!summaryJobs.has(r.id)) {
-    summaryJobs.add(r.id);
-    await setStatus(r.id, req.userId, 'summarizing', null);
-    // No se espera: una clase larga puede tardar varios minutos y Cloudflare
-    // corta respuestas de más de ~100 s. El cliente consulta el estado.
-    runSummaryJob(r.id, req.userId, template);
-  }
+  // Encolado (dedupe en DB): si ya hay un summarize activo, no duplica.
+  await setStatus(r.id, req.userId, 'summarizing', null);
+  await enqueueJob({
+    recordingId: r.id, userId: req.userId, kind: 'summarize',
+    params: { template },
+  });
   return reply.code(202).send({ id: r.id, status: 'summarizing' });
 });
 
@@ -718,7 +705,7 @@ app.post('/recordings/:id/ask', async (req, reply) => {
 
   const question = req.body?.question || '';
   if (!question.trim()) return reply.code(400).send({ error: 'Pregunta vacía' });
-  if (summaryJobs.has(r.id)) {
+  if (await activeJob(r.id, 'summarize')) {
     return reply.code(409).send({ error: 'La nota se está resumiendo. Esperá unos minutos y volvé a preguntar.' });
   }
 
@@ -740,6 +727,72 @@ app.post('/recordings/:id/ask', async (req, reply) => {
   }
 });
 
+// ---------- Runner de la cola (jobs en DB) ----------
+
+/**
+ * Transcribe vía el worker propio (STT + diarización real) o, en dev sin
+ * worker, vía Groq (sin diarización: speaker único, nunca alternancia falsa).
+ */
+async function workerTranscribe(audioPath) {
+  const buf = await readFile(audioPath);
+  const form = new FormData();
+  form.append('audio', new Blob([buf], { type: mimeFor(audioPath) }), path.basename(audioPath));
+  const headers = WORKER_TOKEN ? { 'X-Worker-Token': WORKER_TOKEN } : {};
+  const res = await groqFetch(
+    'worker STT',
+    `${WORKER_URL}/transcribe`,
+    { method: 'POST', headers, body: form },
+    WORKER_TIMEOUT_MS,
+  );
+  if (!res.ok) throw new Error(`worker STT: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+async function transcribeHandler(job) {
+  const r = await getRecording(job.recording_id, job.user_id);
+  if (!r) return; // la nota se borró en el medio
+  if (!r.audioPath) throw new Error('sin audio subido');
+
+  let segments;
+  if (WORKER_URL) {
+    const out = await workerTranscribe(r.audioPath);
+    segments = (out.segments || []).map((s) => ({
+      start: Number(s.start),
+      end: Number(s.end),
+      speaker: String(s.speaker || 'SPEAKER_00'),
+      text: String(s.text || '').trim(),
+    }));
+  } else {
+    // Fallback dev sin worker: Groq no diariza → un solo speaker honesto.
+    const out = await openaiTranscribe(r.audioPath);
+    segments = (out.segments || []).map((s) => ({
+      start: s.start,
+      end: s.end,
+      speaker: 'SPEAKER_00',
+      text: String(s.text || '').trim(),
+    }));
+  }
+  if (segments.length === 0) throw new Error('La transcripción no devolvió segmentos');
+
+  await saveTranscript(r.id, r.userId, segments);
+  // La transcripción ya está en la base: el servidor no necesita el audio.
+  await removeAudioFile(r.audioPath, app.log);
+  await setAudioPath(r.id, r.userId, null);
+  console.log(`[transcribe] ${r.id}: ${segments.length} segmentos listos`);
+}
+
+const runnerHandlers = {
+  transcribe: transcribeHandler,
+  summarize: (job) => runSummaryJob(
+    job.recording_id, job.user_id, job.params?.template || 'general',
+  ),
+  // Trabajo agotado (JOB_MAX_ATTEMPTS): la nota queda en error visible.
+  onFailed: async (job, err) => {
+    const prefix = job.kind === 'summarize' ? 'No se pudo resumir: ' : '';
+    await setStatus(job.recording_id, job.user_id, 'error', `${prefix}${err?.message || err}`);
+  },
+};
+
 // Arranque real solo cuando somos el proceso principal (npm run dev/start).
 // Los tests importan la app y la prueban con inyect sin abrir puerto.
 const isMain = process.argv[1]
@@ -747,12 +800,20 @@ const isMain = process.argv[1]
 
 if (isMain) {
   const port = Number(process.env.PORT || 3001);
-  await resetInterrupted();
+  // Con hostname: reencola solo los jobs de ESTA instancia; los demás
+  // (u otra instancia viva) no se tocan.
+  await resetInterrupted(HOSTNAME);
   await cleanupOrphanAudio(app.log);
   setInterval(() => {
     cleanupOrphanAudio(app.log).catch((e) => app.log.warn({ err: e }, 'cleanup de audios falló'));
   }, 6 * 60 * 60 * 1000).unref();
+  startRunner(runnerHandlers, {
+    concurrency: {
+      transcribe: Number(process.env.JOB_CONCURRENCY_TRANSCRIBE || 1),
+      summarize: Number(process.env.JOB_CONCURRENCY_SUMMARIZE || 1),
+    },
+  });
   await app.listen({ port, host: '0.0.0.0' });
 }
 
-export { app, isMain };
+export { app, isMain, runnerHandlers };
