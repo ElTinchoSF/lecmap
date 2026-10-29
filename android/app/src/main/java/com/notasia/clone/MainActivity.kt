@@ -796,16 +796,16 @@ private fun Detail(
       // S6: en el detalle solo "Transcribir" + "Resumir"; el "Analizar" que
       // encadena ambos pasos vive únicamente en la tarjeta (RecordingCard).
       PrimaryButton(text = "Transcribir", onClick = { vm.transcribe() }, enabled = !vm.busy)
+      SecondaryButton(
+        text = "Resumir",
+        onClick = { vm.summarize() },
+        enabled = !vm.busy && rec.transcript.orEmpty().isNotEmpty(),
+      )
       // S4: renombrar con diálogo de título editable (PATCH al servidor).
       SecondaryButton(
         text = "Renombrar",
         onClick = onRename,
         enabled = !vm.busy,
-      )
-      SecondaryButton(
-        text = "Resumir",
-        onClick = { vm.summarize() },
-        enabled = !vm.busy && rec.transcript.orEmpty().isNotEmpty(),
       )
       if (rec.hasLocalAudio) {
         SecondaryButton(

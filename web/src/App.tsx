@@ -1603,6 +1603,9 @@ export default function App() {
                     Audio liberado: no queda audio para reanalizar.
                   </span>
                 )}
+                {sel.transcript.length > 0 && (
+                  <button className="btn btn-secondary" onClick={summarize} disabled={busy || sel.status === 'summarizing'}>Resumir</button>
+                )}
                 {/* S4: renombrar con el diálogo de título (mismo modal que S2). */}
                 <button
                   className="btn btn-secondary"
@@ -1614,9 +1617,6 @@ export default function App() {
                 >
                   Renombrar
                 </button>
-                {sel.transcript.length > 0 && (
-                  <button className="btn btn-secondary" onClick={summarize} disabled={busy || sel.status === 'summarizing'}>Resumir</button>
-                )}
                 {sel.hasLocalAudio && (
                   <button className="btn btn-secondary" onClick={releaseAudio} disabled={busy || sel.status === 'summarizing'}>Liberar audio</button>
                 )}
