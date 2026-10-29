@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
-import { readFile, writeFile, unlink, readdir, stat } from 'fs/promises';
+import { readFile, writeFile, stat } from 'fs/promises';
 import { createReadStream } from 'fs';
 import { mkdirSync } from 'fs';
 import jwt from 'jsonwebtoken';
@@ -17,10 +17,10 @@ import {
   saveSummary,
   setAudioPath,
   updateTitle,
-  listAudioPaths,
   resetInterrupted,
   deleteRecording,
 } from './db.js';
+import { removeAudioFile, cleanupOrphanAudio } from './cleanup.js';
 import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
 
@@ -116,62 +116,6 @@ const MIME_BY_EXT = {
 
 function mimeFor(filePath) {
   return MIME_BY_EXT[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
-}
-
-/**
- * Borra el audio de una grabación. Solo acepta rutas dentro de uploads/ y
- * reintenta por si Windows lo tiene bloqueado un instante (streaming).
- */
-async function removeAudioFile(audioPath, log) {
-  if (!audioPath) return;
-  const resolved = path.resolve(audioPath);
-  if (resolved !== uploadsDir && !resolved.startsWith(uploadsDir + path.sep)) {
-    log?.warn({ file: resolved }, 'audio fuera de uploads; no se borra');
-    return;
-  }
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      await unlink(resolved);
-      return;
-    } catch (e) {
-      if (e.code === 'ENOENT') return;
-      if (attempt === 3) {
-        log?.warn({ err: e, file: resolved }, 'no se pudo borrar el audio');
-        return;
-      }
-      await new Promise((r) => setTimeout(r, 250 * attempt));
-    }
-  }
-}
-
-/**
- * Borra archivos de uploads/ que ninguna fila de SQLite referencia. Esto cubre
- * audios que quedaron huérfanos porque Windows bloqueó el borrado, o porque una
- * subida se cortó antes de crear la nota.
- */
-async function cleanupOrphanAudio(log) {
-  let files;
-  try {
-    files = await readdir(uploadsDir);
-  } catch {
-    return;
-  }
-  const referenced = new Set((await listAudioPaths()).map((p) => path.resolve(p)));
-  let removed = 0;
-  for (const name of files) {
-    const fp = path.join(uploadsDir, name);
-    if (referenced.has(path.resolve(fp))) continue;
-    try {
-      const info = await stat(fp);
-      if (!info.isFile()) continue;
-    } catch {
-      continue;
-    }
-    await removeAudioFile(fp, log);
-    removed += 1;
-  }
-  if (removed > 0) log?.info({ removed }, 'audios huérfanos eliminados');
-  return removed;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

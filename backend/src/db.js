@@ -157,10 +157,14 @@ export async function updateTitle(id, userId, title) {
   return getRecording(id, userId);
 }
 
-export async function listAudioPaths(userId) {
+/**
+ * Rutas de audio referenciadas por CUALQUIER nota. El limpiador de huérfanos
+ * necesita ver todas las filas: filtrar por user_id (con userId undefined →
+ * NULL) devolvía 0 filas y el cleanup borraba TODOS los audios de uploads/.
+ */
+export async function listAudioPaths() {
   const { rows } = await pool.query(
-    'SELECT audio_path FROM recordings WHERE user_id = $1 AND audio_path IS NOT NULL',
-    [userId],
+    'SELECT audio_path FROM recordings WHERE audio_path IS NOT NULL',
   );
   return rows.map((r) => r.audio_path).filter(Boolean);
 }
@@ -176,4 +180,9 @@ export async function resetInterrupted() {
      error = 'El análisis se interrumpió (el servidor se reinició). Volvé a intentarlo.'
      WHERE status IN ('transcribing', 'summarizing')`,
   );
+}
+
+/** Cierra el pool (tests y shutdown ordenado). */
+export async function closePool() {
+  await pool.end();
 }

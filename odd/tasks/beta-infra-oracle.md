@@ -1,0 +1,82 @@
+# Beta infra Oracle — límites holgados para 10 usuarios × 2 h/día
+
+Objetivo: que LecMap soporte una beta de 10 usuarios con 2 horas de grabación por usuario por día, gratis y sin que la app "se muera antes de arrancar"; speakers reales en la transcripción; bugs críticos del relevamiento corregidos.
+Rama: `feat/beta-infra-oracle` · Estrategia de entrega: commits por unidad de trabajo · Prueba: backend `npm run dev` (:3001) + probes con curl, `npm test`, web `npx tsc --noEmit` + `vite build`, worker Python con su `pytest`, VM Oracle vía `oci` + SSH.
+Forecast de líneas autorizadas: ~1500 (additions + deletions, incluye worker Python nuevo y migración de backend). Ruta por tarea: inline salvo donde se indique delegated (trigger: unidades paralelas con superficies disjuntas).
+
+## Specs
+
+S1 — Beta de 10 usuarios con 2 h de grabación por usuario por día.
+Fuente verbatim (L1, 29/10): "Lo que me gustaría es abrir 10 cupos sin problemas con 2 horas de grabación por usuario por día."
+Fuente verbatim (19/10 contexto): "la idea es que la puedan utilizar los alumnos de universidades y escuelas para poder organizar sus clases."
+Aceptación: con 10 usuarios activos, cada uno puede subir y analizar hasta 2 h (7200 s) de audio por día calendario sin recibir error de cuota; el exceso recibe error 429/403 claro con mensaje de cuota. La cuota se persiste en DB y sobrevive reinicios. El STT no depende de cuotas de Groq free (8 h audio/día): el worker propio de Oracle no tiene ese techo.
+
+S2 — Alternativa 100% gratuita que funcione bien.
+Fuente verbatim (29/10): "necesito que sea una alternativa gratuita pero que funcione bien, no puede hacer cualquier cosa la app."
+Fuente verbatim (29/10): "Por mí movamos todo y mantenemos todo en el mismo lugar, no?"
+Aceptación: todo el cómputo (backend Node, worker STT/diarización, Postgres) corre en la VM ARM `VM.Standard.A1.Flex` (4 OCPU/24 GB) de Oracle Always Free en la región sa-santiago-1; Supabase se conserva solo para Auth. No hay dependencia de cuotas free de Groq ni de Gemini para el STT. Documentado en README cómo llegar a $0/mes.
+
+S3 — Speakers reales en la transcripción (no `SPEAKER_00/01` por paridad de índice).
+Fuente verbatim (29/10): "los 'speakers' que aparecen en la transcripción de las notas son aleatorios y coincido con eso."
+Fuente verbatim (29/10): "Necesito que me recomiendes algo, pero debe ser real, no me sirve que siempre diga 'docente' porque cuando hay una pregunta de algún alumno no sería fiable."
+Aceptación: cada segmento de la transcripción lleva un label de hablante derivado de diarización real sobre el audio (paquete `diarize`, Apache-2.0, CPU-only). En una clase con docente + alumno que pregunta, el turno del alumno queda etiquetado como hablante distinto. El label `speaker` sigue en el contrato API (`Segment.speaker`), pero su valor ya no es `i % 2`. Se permite renombrar hablantes desde la UI (web y Android) y el renombrado se persiste por nota sin alterar la diarización original.
+
+S4 — Worker de transcripción propio en Oracle (STT sin techo de Groq).
+Fuente verbatim (29/10): "no puede hacer cualquier cosa la app" / decisión de mover todo a Oracle.
+Aceptación: servicio Python en la VM Oracle que expone una API interna de transcripción (audio in → segments con speaker real out) usando faster-whisper (modelo `small`) + `diarize`. El backend encola transcripciones en DB (202 + polling) en vez de llamar a Groq de forma síncrona. No existe límite de 25 MB por archivo: el pipeline acepta archivos de 2 h (con compresión a 16 kHz mono en el cliente). Sin límite de horas de audio por día del lado del proveedor.
+
+S5 — LLM de resumen/mapa/ApIA en Gemini free.
+Fuente verbatim (29/10): "alternativa gratuita pero que funcione bien."
+Aceptación: el backend habla con un adaptador de proveedor LLM con al menos `gemini` (free tier) y `groq` (fallback por config). Resumen, mapa de ideas y ApIA funcionan contra Gemini Flash free. El pacer global `TPM_BUDGET = 7000` de Groq ya no es el techo del sistema (se elimina o se hace por-proveedor).
+
+S6 — Corrección de los bugs críticos del relevamiento.
+Fuente verbatim (29/10): "Realiza un análisis detallado del proyecto y releva estos detalles."
+Aceptación (cada punto debe tener prueba):
+a) `cleanupOrphanAudio()` no borra archivos referenciados por notas: la query de referencia lista TODOS los `audio_path` (sin filtro `user_id = NULL`). Test: crear nota con audio → correr cleanup → el archivo sigue.
+b) Auth fail-open: con `NODE_ENV=production` y `SUPABASE_URL` vacía el proceso NO arranca (error claro); en dev sigue comportándose como hoy.
+c) CORS acepta `PATCH` (preflight del renombrar web).
+d) `GET /files/:name` valida ownership (404 para audio de otra cuenta).
+e) Upload valida tamaño/tipo de audio con mensaje claro (rechaza > límite del pipeline con 413/400 en vez de fallar después).
+
+S7 — Cuotas y cola robustas (multiusuario real).
+Aceptación: la cuota de S1 se chequea en servidor (no solo UI); los jobs de resumen/transcripción viven en DB (no en el `Set` en memoria), sobreviven reinicios y no se pisan entre instancias; `resetInterrupted` solo toca jobs de la instancia que arranca. Rate limiting básico por usuario en los endpoints de IA (transcribe/summarize/ask).
+
+S8 — Fuera de esta ronda (quedan para post-beta): organización de clases con materias/tags (Fase 5) y migración del flujo de YouTube.
+Fuente verbatim (29/10): "Fase 5 — Organización de clases (post-beta)".
+Aceptación: no se implementa en esta feature; queda registrado en ## Log.
+
+## Tasks
+
+| ID | Specs | Ruta | Estado | Commit / evidencia |
+|----|-------|------|--------|--------------------|
+| T1 | S6a | inline | ⬜ pendiente | fix limpiador + test |
+| T2 | S6b, S6c, S6d, S6e | inline | ⬜ pendiente | auth fail-open, CORS PATCH, ownership /files, validación upload |
+| T3 | S2 | inline | ⬜ pendiente | VM A1 en Oracle (VCN + instancia + Docker) vía oci/SSH |
+| T4 | S4 | inline | ⬜ pendiente | worker Python (faster-whisper + diarize) desplegado en la VM, API interna |
+| T5 | S4, S7 | inline | ⬜ pendiente | backend: cola de transcripción en DB + 202/polling contra worker |
+| T6 | S5 | inline | ⬜ pendiente | adaptador LLM (gemini/groq) + eliminar techo TPM global |
+| T7 | S1, S7 | inline | ⬜ pendiente | cuota 2 h/usuario/día en DB + rate limiting por usuario |
+| T8 | S3 | inline | ⬜ pendiente | integración diarización → segments.speaker real + guard en prompts |
+| T9 | S3 | inline | ⬜ pendiente | UI renombrar speakers (web + Android) |
+| T10 | S2 | inline | ⬜ pendiente | migración del backend de Render a Oracle (Docker Compose, Caddy/HTTPS) |
+| T11 | S1, S2 | inline | ⬜ pendiente | E2E beta: 10 usuarios sintéticos × 2 h, cuota y cola verificadas |
+
+## Log
+
+L1 (2026-10-29, usuario, verbatim): "quiero que analicemos el tema de los límites de groq, ya que no podemos ni siquiera hacer una pruba beta con esa infraestructura. Necesito que la app no tenga una limitación tan baja, la idea es que la puedan utilizar los alumnos de universidades y escuelas para poder organizar sus clases. Cómo podemos hacer para tener límites más holgados, al menos para poder hacer alguna prueba beta de unos 10 a 20 usuarios y que no se muera la app antes de arrancar?"
+
+L2 (2026-10-29, usuario, verbatim): "lamentablemente necesito que sea una alternativa gratuita pero que funcione bien, no puede hacer cualquier cosa la app. Hay posibilidades? o es inviable?"
+
+L3 (2026-10-29, usuario, verbatim): "Creo que es mejor tener una beta de 10 usuarios con una cuota de uso de 2 horas por día, ya que una clase de universidad al menos dura esas 2 horas, que dices? estamos muy al borde?"
+
+L4 (2026-10-29, usuario, verbatim): "la app como está ya no es viable, sólo serviría si la uso yo para mis clases y eso implica que sólo la testearía yo. Lo que me gustaría es abrir 10 cupos sin problemas con 2 horas de grabación por usuario por día. Podemos armar un plan para cumplir con esas condiciones? Por otro lado, hay que cubrir algunas otras cosas que son de sistema y no de análisis de los LLM, en un análisis detallado que hiciste en algún momento me mencionaste que los 'speakers' que aparecen en la transcripción de las notas son aleatorios y coincido con eso, ahora que la app está un poco más desarrollada, podemos ver ese tipo de detalles? Realiza un análisis detallado del proyecto y releva estos detalles. Pregunta todo lo que necesites para arrancar"
+
+L5 (2026-10-29, usuario, decisiones a las 4 preguntas del plan, verbatim): "1. Necesito que me recomiendes algo, pero debe ser real, no me sirve que siempre diga 'docente' porque cuando hay una pregunta de algún alumno no sería fiable. 2. Ya tenemos cuenta en Oracle Cloud! revisa en la carpeta 'StudyDev/ArSoftME' 3. Dime qué conviene a nivel desarrollo? 4. Por mí movamos todo y mantenemos todo en el mismo lugar, no?"
+
+L6 (2026-10-29, usuario, verbatim): "el plan me parece perfecto. Antes de implementarlo vamos a configurar CLI de oracle así podés tener acceso a lo que necesites, dime cómo hacerlo"
+
+L7 (2026-10-29, cierre de infraestructura de acceso): OCI CLI 3.95.1 instalado y autenticado (region sa-santiago-1, tenancy/OCIDs en ~/.oci/config, fingerprint e8:37:21:32:4c:29:1f:c3:51:b1:3c:11:17:77:4e:02). Hallazgo clave: ArSoftME corre en `VM.Standard.E2.1.Micro` (x86), por lo que el cupo Always Free de ARM (4 OCPU/24 GB, `VM.Standard.A1.Flex`) está entero para LecMap. Plan de fases aprobado por el usuario ("el plan me parece perfecto" + "arranca!").
+
+L8 (2026-10-29, usuario, verbatim): "arranca!" — autorización para iniciar la implementación (creación de VM + fases del plan).
+
+Contexto de análisis (2026-10-29): relevamiento completo del proyecto (backend, frontends, docs). Speakers = `SPEAKER_${i % 2}` en `backend/src/index.js:420` (paridad de índice, sin diarización). Bugs críticos: `cleanupOrphanAudio()` borra todo `uploads/` (query con `user_id=NULL`), auth fail-open sin SUPABASE_URL, `/files/:name` público, CORS sin PATCH, 200 MB multipart vs 512 MB de Render, límite 25 MB de Groq sin validar (2 h a 32 kbps ≈ 28 MB lo excede), jobs en memoria, sin cuotas. Límites Groq free: 8K TPM, 1000 req/día, 8 h audio/día Whisper — insuficiente para 10×2 h. Decisión: STT+diarización propios en Oracle ARM con faster-whisper+`diarize`, LLM en Gemini free, backend migrado de Render a la misma VM.
