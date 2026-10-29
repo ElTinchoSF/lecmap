@@ -21,7 +21,7 @@ import {
   resetInterrupted,
   deleteRecording,
 } from './db.js';
-import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText } from './summary.js';
+import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
 
 const app = Fastify({ logger: true });
@@ -483,12 +483,6 @@ function transcriptChunks(
   return chunks;
 }
 
-const CHUNK_SYSTEM_PROMPT =
-  'Sos un asistente que resume clases en español. Devolvé SOLO JSON con esta forma: ' +
-  '{"summary": string, "points": [string]}. ' +
-  'El summary debe tener 2 o 3 frases. En points poné hasta 6 ideas concretas del fragmento ' +
-  '(datos, definiciones, ejemplos, conclusiones). No inventes contenido que no esté en el texto.';
-
 async function summarizeChunk(chunk, index, total) {
   const messages = [
     { role: 'system', content: CHUNK_SYSTEM_PROMPT },
@@ -524,9 +518,6 @@ async function summarizeChunkSafe(chunk, index, total, depth = 0) {
     throw e;
   }
 }
-
-const MERGE_SYSTEM_PROMPT =
-  'Sos un asistente que condensa resúmenes de fragmentos de una clase. Reescribí un texto compacto en español que conserve TODOS los hechos, definiciones, fórmulas, ejemplos, nombres y conclusiones de los fragmentos, sin inventar nada y sin repetirte. Sin encabezados ni preámbulo: sólo el contenido condensado.';
 
 async function condensePartsChunk(text, index, total) {
   const raw = await openaiChat([
