@@ -3,6 +3,7 @@ package com.notasia.clone
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +18,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.google.gson.JsonParser
 import retrofit2.HttpException
 import java.io.File
 
@@ -446,6 +448,33 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
   }
 
+  /**
+   * S1: duración del archivo en segundos, para la cuota de audio diaria que
+   * cobra el server. Si no se puede medir devuelve 0 y el server la estima
+   * (ffprobe o bytes a 32 kbps). Decisión: el campo se manda siempre, aunque
+   * dé 0 — es el server quien decide cómo resolverlo.
+   */
+  private fun durationSecondsOf(file: File): Int {
+    val retriever = MediaMetadataRetriever()
+    return try {
+      retriever.setDataSource(file.absolutePath)
+      val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+      (ms / 1000).toInt()
+    } catch (e: Exception) {
+      0
+    } finally {
+      runCatching { retriever.release() }
+    }
+  }
+
+  /** Parte multipart `duration` (texto plano, sin content-type). */
+  private fun durationPartOf(file: File): MultipartBody.Part =
+    MultipartBody.Part.createFormData(
+      "duration",
+      null,
+      durationSecondsOf(file).toString().toRequestBody(null),
+    )
+
   fun transcribe() {
     val rec = selected ?: return
     val serverId = rec.serverId
@@ -464,7 +493,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val part = MultipartBody.Part.createFormData(
               "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
             )
-            withContext(Dispatchers.IO) { api.uploadAudio(serverId, part) }
+            withContext(Dispatchers.IO) { api.uploadAudio(serverId, part, durationPartOf(file)) }
           }
         }
         // 202: la cola procesa en background; esperamos los segmentos.
@@ -536,7 +565,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
           )
           val titleBody = l.title.toRequestBody("text/plain".toMediaType())
-          val created = withContext(Dispatchers.IO) { api.upload(part, titleBody) }
+          val created = withContext(Dispatchers.IO) { api.upload(part, titleBody, durationPartOf(file)) }
           serverId = created.id ?: throw IllegalStateException("El servidor no devolvió un id")
           store.setServerId(l.localId, serverId)
           current = created
@@ -550,7 +579,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
               val part = MultipartBody.Part.createFormData(
                 "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
               )
-              withContext(Dispatchers.IO) { api.uploadAudio(serverId, part) }
+              withContext(Dispatchers.IO) { api.uploadAudio(serverId, part, durationPartOf(file)) }
             } else {
               throw IllegalStateException("No hay audio disponible para transcribir")
             }
@@ -789,8 +818,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     return false
   }
 
+  /**
+   * Mensaje `error` del cuerpo JSON del server. Cubre el 429 de cuota de
+   * audio diaria (S1) y el de rate limit (S7): sin esto el usuario solo ve
+   * "HTTP 429 Client Error" y no entiende qué pasó.
+   */
+  private fun serverErrorMessage(e: HttpException): String? = try {
+    val raw = e.response()?.errorBody()?.string()
+    if (raw.isNullOrBlank()) null
+    else JsonParser.parseString(raw).asJsonObject
+      .get("error")?.takeIf { it.isJsonPrimitive }?.asString
+  } catch (parse: Exception) {
+    null
+  }
+
   private fun friendly(e: Exception): String =
     if (e is HttpException && e.code() == 401)
       "Sesión expirada. Volvé a iniciar sesión."
+    else if (e is HttpException && e.code() == 429)
+      serverErrorMessage(e) ?: "Demasiadas solicitudes. Esperá un momento y volvé a intentarlo."
     else e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 }

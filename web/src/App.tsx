@@ -669,6 +669,47 @@ function MindmapView({ mm }: { mm: unknown }) {
   );
 }
 
+/**
+ * Duración del blob en segundos (S1: la cuota diaria se mide en segundos de
+ * audio). objectURL + <audio>: si los metadata no llegan en 5 s devuelve 0 y
+ * el server cae a ffprobe o a la estimación por bytes. El objectURL se
+ * revoca siempre, haya resuelto o no.
+ */
+function blobDurationSeconds(blob: Blob): Promise<number> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio();
+    let settled = false;
+    const done = (secs: number) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
+      URL.revokeObjectURL(url);
+      resolve(secs);
+    };
+    const timer = window.setTimeout(() => done(0), 5000);
+    audio.onloadedmetadata = () => {
+      const d = audio.duration;
+      done(Number.isFinite(d) && d > 0 ? d : 0);
+    };
+    audio.onerror = () => done(0);
+    audio.src = url;
+  });
+}
+
+/** Mensaje `error` del cuerpo JSON del server (429 cuota/rate, 413, 400…). */
+async function responseError(r: Response, fallback: string): Promise<string> {
+  try {
+    const body = await r.json();
+    if (body && typeof body.error === 'string' && body.error) return body.error;
+  } catch {
+    // cuerpo no JSON: seguimos con el fallback
+  }
+  return fallback;
+}
+
 /** El <audio> no puede mandar Authorization: el token viaja como query param. */
 async function serverAudioUrl(audioPath?: string | null): Promise<string | null> {
   if (!audioPath) return null;
@@ -1099,17 +1140,21 @@ export default function App() {
   const uploadBlob = async (local: LocalNote, blob: Blob): Promise<Recording> => {
     const fd = new FormData();
     fd.append('audio', blob, 'nota.webm');
+    // Duración medida en el navegador para que la cuota del día (S1) cobre lo
+    // real. Si da 0 igual se manda: el server fallbacka a ffprobe/bytes.
+    fd.append('duration', String(Math.round(await blobDurationSeconds(blob))));
     fd.append('title', local.title);
     const r = await apiFetch('/recordings', { method: 'POST', body: fd });
-    if (!r.ok) throw new Error(`No se pudo subir el audio (HTTP ${r.status})`);
+    if (!r.ok) throw new Error(await responseError(r, `No se pudo subir el audio (HTTP ${r.status})`));
     return r.json();
   };
 
   const uploadAudioToServer = async (serverId: string, blob: Blob) => {
     const fd = new FormData();
     fd.append('audio', blob, 'nota.webm');
+    fd.append('duration', String(Math.round(await blobDurationSeconds(blob))));
     const r = await apiFetch(`/recordings/${serverId}/audio`, { method: 'POST', body: fd });
-    if (!r.ok) throw new Error(`No se pudo re-subir el audio (HTTP ${r.status})`);
+    if (!r.ok) throw new Error(await responseError(r, `No se pudo re-subir el audio (HTTP ${r.status})`));
     return r.json();
   };
 

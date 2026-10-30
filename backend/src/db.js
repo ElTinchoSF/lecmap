@@ -24,15 +24,18 @@ const toRecording = (row, segments = []) => row && ({
   youtubeUrl: row.youtube_url || null,
   summary: row.summary || null,
   mindmap: row.mindmap ?? null,
+  durationSeconds: row.duration_seconds ?? null,
   transcript: segments.map((s) => ({ start: s.start, end: s.end, speaker: s.speaker, text: s.text })),
   createdAt: row.created_at,
 });
 
-export async function createRecording({ id, userId, title, audioPath = null, youtubeUrl = null, createdAt }) {
+export async function createRecording({
+  id, userId, title, audioPath = null, youtubeUrl = null, createdAt, durationSeconds = null,
+}) {
   await pool.query(
-    `INSERT INTO recordings (id, user_id, title, status, audio_path, youtube_url, created_at)
-     VALUES ($1, $2, $3, 'queued', $4, $5, $6)`,
-    [id, userId, title, audioPath, youtubeUrl, createdAt],
+    `INSERT INTO recordings (id, user_id, title, status, audio_path, youtube_url, created_at, duration_seconds)
+     VALUES ($1, $2, $3, 'queued', $4, $5, $6, $7)`,
+    [id, userId, title, audioPath, youtubeUrl, createdAt, durationSeconds],
   );
   return getRecording(id, userId);
 }
@@ -146,6 +149,19 @@ export async function setAudioPath(id, userId, audioPath) {
   await pool.query(
     'UPDATE recordings SET audio_path = $1 WHERE id = $2 AND user_id = $3',
     [audioPath, id, userId],
+  );
+  return getRecording(id, userId);
+}
+
+/**
+ * S1/T7: setea SOLO la duración del audio. Se usa para reconciliar la
+ * duración estimada al subir con la duración real que midió whisper
+ * (o el ffprobe del server) una vez transcrito.
+ */
+export async function setDurationSeconds(id, userId, seconds) {
+  await pool.query(
+    'UPDATE recordings SET duration_seconds = $1 WHERE id = $2 AND user_id = $3',
+    [Math.round(Number(seconds)), id, userId],
   );
   return getRecording(id, userId);
 }

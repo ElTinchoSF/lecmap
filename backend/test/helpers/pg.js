@@ -16,6 +16,7 @@ CREATE TABLE recordings (
   youtube_url text,
   summary text,
   mindmap jsonb,
+  duration_seconds integer,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE segments (
@@ -47,6 +48,11 @@ CREATE UNIQUE INDEX idx_jobs_active
   ON jobs (recording_id, kind)
   WHERE status IN ('queued', 'running');
 CREATE INDEX idx_jobs_claim ON jobs (kind, status, available_at);
+-- Espejo de supabase/migrations/003_quota.sql (solo columnas que lee quota.js)
+CREATE TABLE profiles (
+  id uuid PRIMARY KEY,
+  quota_seconds_per_day integer
+);
 `;
 
 async function waitForPg(dbUrl, retries = 30) {

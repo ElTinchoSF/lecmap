@@ -17,6 +17,7 @@ import {
   saveTranscript,
   saveSummary,
   setAudioPath,
+  setDurationSeconds,
   updateTitle,
   resetInterrupted,
   deleteRecording,
@@ -26,6 +27,8 @@ import {
 } from './db.js';
 import { startRunner, HOSTNAME } from './jobs.js';
 import { chat, llmAvailable, llmInfo } from './llm.js';
+import { assertQuota, resolveDurationSeconds } from './quota.js';
+import { checkRateLimit } from './ratelimit.js';
 import { removeAudioFile, cleanupOrphanAudio, defaultUploadsDir } from './cleanup.js';
 import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
@@ -59,8 +62,15 @@ await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 
 // Auth con Supabase: verificamos el JWT firmado con ES256 vía JWKS.
 // SUPABASE_URL = https://<project>.supabase.co (para buscar las claves públicas)
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim().replace(/\/$/, '');
+// Identidad fija en uuid para el modo dev (sin SUPABASE_URL): las columnas
+// user_id son uuid en recordings/jobs/profiles, y el viejo string 'dev-user'
+// hacía fallar todo INSERT/SELECT en dev contra Postgres (invalid input
+// syntax for type uuid). En dev no hay usuarios reales: una identidad
+// constante alcanza y mantiene el esquema estricto de producción.
+const DEV_USER_ID = '00000000-0000-4000-8000-000000000000';
+
 // Fail-closed en producción: sin SUPABASE_URL la API quedaría abierta con
-// 'dev-user' para todos (antes pasaba silencioso). En dev sigue abierta.
+// DEV_USER_ID para todos (antes pasaba silencioso). En dev sigue abierta.
 if (process.env.NODE_ENV === 'production' && !SUPABASE_URL) {
   console.error(
     '[config] NODE_ENV=production pero SUPABASE_URL está vacía. '
@@ -82,7 +92,7 @@ app.addHook('onRequest', async (req, reply) => {
 
   // Sin configurado → modo dev abierto (sin auth).
   if (!jwks) {
-    req.userId = 'dev-user';
+    req.userId = DEV_USER_ID;
     return;
   }
 
@@ -238,15 +248,48 @@ function audioUploadError(safeName, buf) {
   return null;
 }
 
+// Cuerpo del 429 por cuota diaria (S1): mensaje claro en minutos + el
+// desglose en segundos para que el cliente pueda mostrar "te quedan X min".
+function quotaBody(e) {
+  const min = (s) => Math.round(Number(s) / 60);
+  return {
+    error: `Límite diario de audio alcanzado: usaste ${min(e.used)} de ${min(e.quota)} min `
+      + '(el límite se renueva mañana).',
+    code: 'quota_exceeded',
+    used_seconds: e.used,
+    quota_seconds: e.quota,
+    remaining_seconds: e.remaining,
+  };
+}
+
+// Cuerpo del 429 por rate limiting (S7): Retry-After para que los clientes
+// puedan reintentar sin preguntar.
+function sendRateLimited(reply, e) {
+  reply.header('Retry-After', String(e.retryAfterSec));
+  return reply.code(429).send({
+    error: e.message,
+    code: 'rate_limited',
+    retry_after_seconds: e.retryAfterSec,
+  });
+}
+
 app.post('/recordings', async (req, reply) => {
   const ct = req.headers['content-type'] || '';
   let title = 'Grabación ' + new Date().toLocaleString('es-AR');
   let youtubeUrl = null;
-  let audioPath = null;
+  // El form completo se acumula ANTES de tocar el disco: el campo duration
+  // puede venir antes o después del archivo (S1: cuota por duración).
+  let audioBuf = null;
+  let audioName = null;
+  let clientDuration = null;
 
   if (ct.includes('multipart')) {
     for await (const part of req.parts()) {
       if (part.type === 'field' && part.fieldname === 'title') title = String(part.value);
+      if (part.type === 'field' && part.fieldname === 'duration') {
+        const secs = Number(part.value);
+        if (Number.isFinite(secs)) clientDuration = secs;
+      }
       if (part.type === 'file' && part.fieldname === 'audio') {
         let buf;
         try {
@@ -263,9 +306,8 @@ app.post('/recordings', async (req, reply) => {
         const safeName = path.basename(part.filename || 'audio.webm').replace(/[^\w.\-]/g, '_');
         const invalid = audioUploadError(safeName, buf);
         if (invalid) return reply.code(400).send({ error: invalid });
-        const fp = path.join(uploadsDir, `${id()}_${safeName}`);
-        await writeFile(fp, buf);
-        audioPath = fp;
+        audioBuf = buf;
+        audioName = safeName;
       }
     }
   } else {
@@ -274,7 +316,36 @@ app.post('/recordings', async (req, reply) => {
     if (b.youtubeUrl) youtubeUrl = String(b.youtubeUrl);
   }
 
-  return createRecording({ id: id(), userId: req.userId, title, audioPath, youtubeUrl, createdAt: now() });
+  // Nota sin audio (JSON / YouTube): no consume cuota.
+  if (!audioBuf) {
+    return createRecording({ id: id(), userId: req.userId, title, audioPath: null, youtubeUrl, createdAt: now() });
+  }
+
+  // Orden seguro: escribir → medir duración (ffprobe sobre el archivo final)
+  // → chequear cuota → crear la nota. Si la cuota corta, se borra el audio
+  // recién escrito (429 sin dejar huérfanos ni filas a medias).
+  const fp = path.join(uploadsDir, `${id()}_${audioName}`);
+  await writeFile(fp, audioBuf);
+  const duration = resolveDurationSeconds(fp, clientDuration, audioBuf.length);
+  try {
+    await assertQuota(req.userId, duration, {});
+  } catch (e) {
+    if (e.code === 'quota_exceeded') {
+      await removeAudioFile(fp, req.log);
+      return reply.code(429).send(quotaBody(e));
+    }
+    throw e;
+  }
+
+  return createRecording({
+    id: id(),
+    userId: req.userId,
+    title,
+    audioPath: fp,
+    youtubeUrl,
+    createdAt: now(),
+    durationSeconds: duration,
+  });
 });
 
 // Vuelve a subir el audio de una nota existente (por ejemplo, para reanalizarla
@@ -284,33 +355,59 @@ app.post('/recordings/:id/audio', async (req, reply) => {
   if (!r) return reply.code(404).send({ error: 'not found' });
   if (!req.isMultipart()) return reply.code(400).send({ error: 'se esperaba multipart/form-data' });
 
-  let part;
+  // Se recorre el form completo (no req.file()): el campo duration puede
+  // venir después del archivo y el server debe verlo sin importar el orden.
+  let buf = null;
+  let safeName = null;
+  let clientDuration = null;
   try {
-    part = await req.file();
+    for await (const part of req.parts()) {
+      if (part.type === 'field' && part.fieldname === 'duration') {
+        const secs = Number(part.value);
+        if (Number.isFinite(secs)) clientDuration = secs;
+      }
+      if (part.type === 'file' && part.fieldname === 'audio') {
+        try {
+          buf = await part.toBuffer();
+        } catch (e) {
+          if (e.code === 'FST_REQ_FILE_TOO_LARGE') {
+            return reply.code(413).send({ error: `El audio supera el máximo de ${MAX_UPLOAD_MB} MB.` });
+          }
+          throw e;
+        }
+        safeName = path.basename(part.filename || 'audio.webm').replace(/[^\w.\-]/g, '_');
+      }
+    }
   } catch (e) {
     if (e.code === 'FST_REQ_FILE_TOO_LARGE') {
       return reply.code(413).send({ error: `El audio supera el máximo de ${MAX_UPLOAD_MB} MB.` });
     }
     return reply.code(400).send({ error: e.message });
   }
-  if (!part) return reply.code(400).send({ error: 'falta el archivo de audio' });
+  if (!buf) return reply.code(400).send({ error: 'falta el archivo de audio' });
 
-  let buf;
+  const invalid = audioUploadError(safeName, buf);
+  if (invalid) return reply.code(400).send({ error: invalid });
+
+  const fp = path.join(uploadsDir, `${id()}_${safeName}`);
+  await writeFile(fp, buf);
+  const duration = resolveDurationSeconds(fp, clientDuration, buf.length);
   try {
-    buf = await part.toBuffer();
+    // excludeRecordingId: este re-upload REEMPLAZA al actual, la nota no
+    // debe contar dos veces contra la cuota del día.
+    await assertQuota(req.userId, duration, { excludeRecordingId: r.id });
   } catch (e) {
-    if (e.code === 'FST_REQ_FILE_TOO_LARGE') {
-      return reply.code(413).send({ error: `El audio supera el máximo de ${MAX_UPLOAD_MB} MB.` });
+    if (e.code === 'quota_exceeded') {
+      // Se borra solo el audio NUEVO: el de la nota sigue intacto.
+      await removeAudioFile(fp, req.log);
+      return reply.code(429).send(quotaBody(e));
     }
     throw e;
   }
-  const safeName = path.basename(part.filename || 'audio.webm').replace(/[^\w.\-]/g, '_');
-  const invalid = audioUploadError(safeName, buf);
-  if (invalid) return reply.code(400).send({ error: invalid });
-  const fp = path.join(uploadsDir, `${id()}_${safeName}`);
-  await writeFile(fp, buf);
+
   if (r.audioPath) await removeAudioFile(r.audioPath, req.log);
   await setAudioPath(r.id, req.userId, fp);
+  await setDurationSeconds(r.id, req.userId, duration);
   return getRecording(r.id, req.userId);
 });
 
@@ -350,7 +447,7 @@ app.delete('/recordings/:id', async (req, reply) => {
 // El elemento <audio> del navegador no puede mandar Authorization: acepta el
 // token por header o por ?token=. Sin jwks (modo dev) queda abierto como antes.
 async function resolveRequester(req, reply) {
-  if (!jwks) return 'dev-user';
+  if (!jwks) return DEV_USER_ID;
   const auth = req.headers.authorization || '';
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
   const queryToken = typeof req.query?.token === 'string' ? req.query.token.trim() : '';
@@ -398,7 +495,28 @@ app.get('/files/:name', async (req, reply) => {
 });
 
 app.post('/recordings/:id/transcribe', async (req, reply) => {
+  // S7: rate limit PRIMERO, antes de tocar la base o el proveedor.
+  try {
+    checkRateLimit(req.userId, 'transcribe');
+  } catch (e) {
+    if (e.code === 'rate_limited') return sendRateLimited(reply, e);
+    throw e;
+  }
+
   const r = await getRecording(req.params.id, req.userId);
+
+  // S1: la transcripción consume la cuota del día de esa nota. Si la nota
+  // no tiene duración conocida entra 0 y pasa; al transcribir se reconcilia
+  // con la duración real (setDurationSeconds en transcribeHandler).
+  if (r) {
+    try {
+      await assertQuota(req.userId, Number(r.durationSeconds) || 0, { excludeRecordingId: r.id });
+    } catch (e) {
+      if (e.code === 'quota_exceeded') return reply.code(429).send(quotaBody(e));
+      throw e;
+    }
+  }
+
   if (!r) return reply.code(404).send({ error: 'not found' });
   if (!WORKER_URL && !OPENAI_KEY) {
     return reply.code(500).send({ error: 'WORKER_URL u OPENAI_API_KEY no configuradas' });
@@ -578,6 +696,13 @@ async function runSummaryJob(id, userId, template) {
 }
 
 app.post('/recordings/:id/summarize', async (req, reply) => {
+  // S7: rate limit por usuario antes de cualquier trabajo.
+  try {
+    checkRateLimit(req.userId, 'summarize');
+  } catch (e) {
+    if (e.code === 'rate_limited') return sendRateLimited(reply, e);
+    throw e;
+  }
   const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   if (!llmAvailable()) {
@@ -648,6 +773,13 @@ function relevantTranscript(segments, question, maxChars = 12_000) {
 }
 
 app.post('/recordings/:id/ask', async (req, reply) => {
+  // S7: rate limit por usuario antes de cualquier trabajo.
+  try {
+    checkRateLimit(req.userId, 'ask');
+  } catch (e) {
+    if (e.code === 'rate_limited') return sendRateLimited(reply, e);
+    throw e;
+  }
   const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   if (!llmAvailable()) {
@@ -705,8 +837,11 @@ async function transcribeHandler(job) {
   if (!r.audioPath) throw new Error('sin audio subido');
 
   let segments;
+  // Duración real medida por el STT (worker o Groq), si viene en la respuesta.
+  let realDuration = null;
   if (WORKER_URL) {
     const out = await workerTranscribe(r.audioPath);
+    realDuration = Number(out.duration);
     segments = (out.segments || []).map((s) => ({
       start: Number(s.start),
       end: Number(s.end),
@@ -716,6 +851,7 @@ async function transcribeHandler(job) {
   } else {
     // Fallback dev sin worker: Groq no diariza → un solo speaker honesto.
     const out = await openaiTranscribe(r.audioPath);
+    realDuration = Number(out.duration);
     segments = (out.segments || []).map((s) => ({
       start: s.start,
       end: s.end,
@@ -726,6 +862,14 @@ async function transcribeHandler(job) {
   if (segments.length === 0) throw new Error('La transcripción no devolvió segmentos');
 
   await saveTranscript(r.id, r.userId, segments);
+
+  // S1: la cuota se estimó al subir (bytes o duración del cliente); acá la
+  // reconciliamos con la duración REAL del audio según whisper — o, si el
+  // proveedor no la trajo, con el fin del último segmento.
+  const measured = Number.isFinite(realDuration) && realDuration > 0
+    ? realDuration
+    : Math.max(...segments.map((s) => s.end));
+  if (measured > 0) await setDurationSeconds(r.id, r.userId, Math.round(measured));
   // La transcripción ya está en la base: el servidor no necesita el audio.
   await removeAudioFile(r.audioPath, app.log);
   await setAudioPath(r.id, r.userId, null);

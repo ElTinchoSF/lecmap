@@ -65,11 +65,16 @@ interface Api {
   @GET("recordings/{id}")
   suspend fun get(@Path("id") id: String): RecordingDto
 
+  // duration viaja como MultipartBody.Part armado en AppViewModel (ya trae
+  // su nombre "duration"; Retrofit no acepta @Part("nombre") con Part).
   @Multipart
   @POST("recordings")
   suspend fun upload(
     @Part audio: MultipartBody.Part,
     @Part("title") title: RequestBody,
+    // S1: duración del audio en segundos; la cuota diaria se cobra con esto
+    // (si llega vacío o 0, el server la estima con ffprobe o por bytes).
+    @Part duration: MultipartBody.Part,
   ): RecordingDto
 
   @Multipart
@@ -77,6 +82,7 @@ interface Api {
   suspend fun uploadAudio(
     @Path("id") id: String,
     @Part audio: MultipartBody.Part,
+    @Part duration: MultipartBody.Part,
   ): RecordingDto
 
   // NOTA: POST /transcribe responde 202 (encolado); el cliente espera con
