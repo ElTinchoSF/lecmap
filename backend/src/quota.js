@@ -1,7 +1,7 @@
 // Cuota de audio diaria por usuario (S1) + duración del audio subido (T7).
 // El env se lee por llamada (mismo patrón que src/llm.js) para que los tests
 // puedan setear QUOTA_AUDIO_SECONDS_PER_DAY / QUOTA_TZ entre casos.
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { pool } from './db.js';
 
 // Beta S1: 2 h de grabación por usuario por día. El override del usuario
@@ -68,46 +68,71 @@ export async function assertQuota(userId, incomingSeconds, opts = {}) {
   return { used, quota, remaining };
 }
 
-// ffprobe es la fuente autoritativa de duración cuando está instalado.
-// Se chequea una sola vez por proceso (el binario no aparece ni desaparece
-// en runtime): spawnSync no lanza, devuelve .error (ENOENT) si falta.
+// ffprobe async (R4-1): spawnSync acá bloqueaba el event loop hasta 5 s.
+// Se cachea una sola vez por proceso (el binario no aparece ni se va).
 let ffprobeState = null;
+export function resetFfprobeCache() {
+  ffprobeState = null;
+}
 function hasFfprobe() {
-  if (ffprobeState === null) {
-    try {
-      const probe = spawnSync('ffprobe', ['-version'], { encoding: 'utf8', timeout: 3000 });
-      ffprobeState = !probe.error && probe.status === 0;
-    } catch {
-      ffprobeState = false;
-    }
+  if (!ffprobeState) {
+    ffprobeState = new Promise((resolve) => {
+      try {
+        const p = spawn('ffprobe', ['-version'], { stdio: 'ignore' });
+        p.on('error', () => resolve(false));
+        p.on('close', (code) => resolve(code === 0));
+      } catch {
+        resolve(false);
+      }
+    });
   }
   return ffprobeState;
 }
 
-/**
- * Duración en segundos, nunca null:
- *   a) ffprobe sobre el archivo escrito (si el binario existe);
- *   b) la duración que midió el cliente en el navegador/Android;
- *   c) estimación por bytes a 32 kbps (bitrate default de grabación Android).
- */
-export function resolveDurationSeconds(filePath, clientSeconds, bytes) {
-  if (filePath && hasFfprobe()) {
-    try {
-      const r = spawnSync(
-        'ffprobe',
-        ['-v', 'error', '-show_entries', 'format=duration',
-          '-of', 'default=noprint_wrappers=1:nokey=1', String(filePath)],
-        { encoding: 'utf8', timeout: 5000 },
-      );
-      const secs = Number(String(r.stdout || '').trim());
-      if (!r.error && r.status === 0 && Number.isFinite(secs) && secs > 0) {
-        return Math.round(secs);
-      }
-    } catch {
-      // ffprobe roto/incompatible: seguimos con el fallback del cliente.
-    }
+/** Duración en segundos vía ffprobe async; null si falla o timed out (5 s). */
+function ffprobeDuration(filePath) {
+  return new Promise((resolve) => {
+    let out = '';
+    const p = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1', String(filePath)]);
+    const timer = setTimeout(() => { p.kill(); resolve(null); }, 5000);
+    p.stdout.on('data', (d) => { out += d; });
+    p.on('error', () => { clearTimeout(timer); resolve(null); });
+    p.on('close', (code) => {
+      clearTimeout(timer);
+      const secs = Number(out.trim());
+      resolve(code === 0 && Number.isFinite(secs) && secs > 0 ? Math.round(secs) : null);
+    });
+  });
+}
+
+// R1-001: si el `duration` del cliente implica > 320 kbps, es mentiroso
+// (mide 1 s un archivo de horas) y manda la estimación por bytes.
+const MAX_PLAUSIBLE_BPS = 320_000;
+
+export async function resolveDurationSeconds(filePath, clientSeconds, bytes) {
+  if (filePath && await hasFfprobe()) {
+    const secs = await ffprobeDuration(filePath);
+    if (secs) return secs;
   }
+  const bytesNum = Number(bytes) || 0;
   const client = Number(clientSeconds);
-  if (Number.isFinite(client) && client > 0) return Math.round(client);
-  return Math.max(1, Math.round((Number(bytes) || 0) / 4000));
+  if (Number.isFinite(client) && client > 0) {
+    const impliedBps = bytesNum > 0 ? (bytesNum * 8) / client : 0;
+    if (bytesNum === 0 || impliedBps <= MAX_PLAUSIBLE_BPS) return Math.round(client);
+  }
+  return Math.max(1, Math.round(bytesNum / 4000));
+}
+
+// R4-2: serializa check→insert de cuota por usuario (single-instance, como
+// ratelimit.js); multi-instancia necesitaría advisory locks de Postgres.
+const quotaChains = new Map();export function withQuotaLock(userId, fn) {
+  const prev = quotaChains.get(userId) ?? Promise.resolve();
+  const run = prev.then(() => fn());
+  const tail = run.then(() => {}, () => {});
+  quotaChains.set(userId, tail);
+  tail.then(() => {
+    if (quotaChains.get(userId) === tail) quotaChains.delete(userId);
+  });
+  return run;
 }

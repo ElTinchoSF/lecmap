@@ -27,7 +27,7 @@ import {
 } from './db.js';
 import { startRunner, HOSTNAME } from './jobs.js';
 import { chat, llmAvailable, llmInfo } from './llm.js';
-import { assertQuota, resolveDurationSeconds } from './quota.js';
+import { assertQuota, resolveDurationSeconds, withQuotaLock } from './quota.js';
 import { checkRateLimit } from './ratelimit.js';
 import { removeAudioFile, cleanupOrphanAudio, defaultUploadsDir } from './cleanup.js';
 import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
@@ -326,9 +326,21 @@ app.post('/recordings', async (req, reply) => {
   // recién escrito (429 sin dejar huérfanos ni filas a medias).
   const fp = path.join(uploadsDir, `${id()}_${audioName}`);
   await writeFile(fp, audioBuf);
-  const duration = resolveDurationSeconds(fp, clientDuration, audioBuf.length);
+  const duration = await resolveDurationSeconds(fp, clientDuration, audioBuf.length);
+  // R4-2: check+insert serializados por usuario (withQuotaLock).
   try {
-    await assertQuota(req.userId, duration, {});
+    return await withQuotaLock(req.userId, async () => {
+      await assertQuota(req.userId, duration, {});
+      return createRecording({
+        id: id(),
+        userId: req.userId,
+        title,
+        audioPath: fp,
+        youtubeUrl,
+        createdAt: now(),
+        durationSeconds: duration,
+      });
+    });
   } catch (e) {
     if (e.code === 'quota_exceeded') {
       await removeAudioFile(fp, req.log);
@@ -336,16 +348,6 @@ app.post('/recordings', async (req, reply) => {
     }
     throw e;
   }
-
-  return createRecording({
-    id: id(),
-    userId: req.userId,
-    title,
-    audioPath: fp,
-    youtubeUrl,
-    createdAt: now(),
-    durationSeconds: duration,
-  });
 });
 
 // Vuelve a subir el audio de una nota existente (por ejemplo, para reanalizarla
@@ -391,11 +393,15 @@ app.post('/recordings/:id/audio', async (req, reply) => {
 
   const fp = path.join(uploadsDir, `${id()}_${safeName}`);
   await writeFile(fp, buf);
-  const duration = resolveDurationSeconds(fp, clientDuration, buf.length);
+  const duration = await resolveDurationSeconds(fp, clientDuration, buf.length);
   try {
-    // excludeRecordingId: este re-upload REEMPLAZA al actual, la nota no
-    // debe contar dos veces contra la cuota del día.
-    await assertQuota(req.userId, duration, { excludeRecordingId: r.id });
+    // R4-2 + excludeRecordingId: check y escritura serializados por usuario;
+    // este re-upload REEMPLAZA al actual y no debe contar dos veces.
+    await withQuotaLock(req.userId, async () => {
+      await assertQuota(req.userId, duration, { excludeRecordingId: r.id });
+      await setAudioPath(r.id, req.userId, fp);
+      await setDurationSeconds(r.id, req.userId, duration);
+    });
   } catch (e) {
     if (e.code === 'quota_exceeded') {
       // Se borra solo el audio NUEVO: el de la nota sigue intacto.
@@ -405,9 +411,8 @@ app.post('/recordings/:id/audio', async (req, reply) => {
     throw e;
   }
 
+  // El puntero ya cambió al archivo nuevo: recién ahora se borra el viejo.
   if (r.audioPath) await removeAudioFile(r.audioPath, req.log);
-  await setAudioPath(r.id, req.userId, fp);
-  await setDurationSeconds(r.id, req.userId, duration);
   return getRecording(r.id, req.userId);
 });
 

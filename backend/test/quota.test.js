@@ -3,7 +3,7 @@
 // Modo dev (sin SUPABASE_URL): identidad única DEV_USER_ID en uuid.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { startPg } from './helpers/pg.js';
@@ -252,12 +252,12 @@ test('getQuotaSeconds: override por usuario vs default; usage con exclude y QUOT
   }
 });
 
-test('resolveDurationSeconds: clientSeconds > bytes > 1, nunca null', () => {
+test('resolveDurationSeconds: clientSeconds > bytes > 1, nunca null', async () => {
   const fake = path.join(uploadsDir, 'no-existe.webm');
-  assert.equal(quota.resolveDurationSeconds(fake, 123, 99_999), 123, 'cliente manda');
-  assert.equal(quota.resolveDurationSeconds(fake, null, 8000), 2, 'bytes / 4000 (32 kbps)');
-  assert.equal(quota.resolveDurationSeconds(fake, 0, 1500), 1, 'piso de 1 s');
-  assert.notEqual(quota.resolveDurationSeconds(fake, null, 0), null, 'nunca null');
+  assert.equal(await quota.resolveDurationSeconds(fake, 123, 99_999), 123, 'cliente manda');
+  assert.equal(await quota.resolveDurationSeconds(fake, null, 8000), 2, 'bytes / 4000 (32 kbps)');
+  assert.equal(await quota.resolveDurationSeconds(fake, 0, 1500), 1, 'piso de 1 s');
+  assert.notEqual(await quota.resolveDurationSeconds(fake, null, 0), null, 'nunca null');
 });
 
 test('ratelimit: con max 2 la tercera llamada lanza rate_limited', () => {
@@ -274,4 +274,54 @@ test('ratelimit: con max 2 la tercera llamada lanza rate_limited', () => {
   rl.checkRateLimit(user, 'ask');
   rl.checkRateLimit('otro-usuario', 'transcribe');
   rl.checkRateLimit(user, 'summarize'); // acción distinta: no lanza
+});
+
+// ---------- corrección de review: R1-001 / R4-2 / R4-1 ----------
+test('R1-001: duration declarada 1 s con archivo de 8 MB se cobra por bytes', async () => {
+  const fake = path.join(uploadsDir, 'spoof.webm');
+  const secs = await quota.resolveDurationSeconds(fake, 1, 8_000_000);
+  assert.equal(secs, 2000, 'el 1 s mentiroso cae en la estimación por bytes (32 kbps)');
+});
+
+test('R1-001: upload con duration=1 y archivo real guarda la duración por bytes', async () => {
+  const content = 'x'.repeat(4_000_000); // 4 MB ≈ 1000 s a 32 kbps
+  const res = await upload({ title: 'Spoof', filename: 'spoof.webm', content, duration: 1 });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.equal(res.json().durationSeconds, 1000, 'el server ignora el 1 s mentiroso');
+});
+
+test('R4-2: withQuotaLock serializa check+insert concurrentes del usuario', async () => {
+  const uid = '77777777-7777-4777-8777-777777777777';
+  const d = 3000; // QUOTA=3600: cada uno entra solo; juntos exceden
+  const results = await Promise.all([1, 2].map(() => quota
+    .withQuotaLock(uid, async () => {
+      await quota.assertQuota(uid, d, {});
+      await insertNota(`lock-${Date.now()}-${Math.random().toString(36).slice(2)}`, uid, d, new Date().toISOString());
+      return 'ok';
+    })
+    .catch((e) => e.code)));
+  assert.deepEqual(results.sort(), ['ok', 'quota_exceeded'],
+    'la segunda sección crítica debe ver el insert de la primera');
+});
+
+test('R4-1: ffprobe corre sin bloquear el event loop', async () => {
+  const binDir = await mkdtemp(path.join(tmpdir(), 'lecmap-ffprobe-'));
+  await writeFile(path.join(binDir, 'ffprobe'),
+    '#!/bin/sh\nif [ "$1" = "-version" ]; then echo fake; exit 0; fi\nsleep 1\necho 42.5\n',
+    { mode: 0o755 });
+  const prevPath = process.env.PATH;
+  process.env.PATH = binDir + path.delimiter + prevPath;
+  quota.resetFfprobeCache();
+  let ticks = 0;
+  const iv = setInterval(() => { ticks++; }, 50);
+  try {
+    const secs = await quota.resolveDurationSeconds(path.join(uploadsDir, 'x.webm'), null, 0);
+    assert.equal(secs, 43, 'ffprobe async devuelve la duración medida (42.5 → 43)');
+    assert.ok(ticks >= 5, `event loop bloqueado durante el spawn: solo ${ticks} ticks`);
+  } finally {
+    clearInterval(iv);
+    process.env.PATH = prevPath;
+    quota.resetFfprobeCache();
+    await rm(binDir, { recursive: true, force: true });
+  }
 });
