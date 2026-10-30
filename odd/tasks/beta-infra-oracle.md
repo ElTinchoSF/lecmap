@@ -51,9 +51,9 @@ Aceptación: no se implementa en esta feature; queda registrado en ## Log.
 |----|-------|------|--------|--------------------|
 | T1 | S6a | inline | ✅ hecho | commit `8188f32`: RED reproducido (audio referenciado borrado, ENOENT) → GREEN 39/39 con Postgres Docker efímero; `cleanup.js` extraído, `closePool()` agregado |
 | T2 | S6b, S6c, S6d, S6e | inline | ✅ hecho | commit `c370d78`: 8 tests API nuevos (JWKS local + JWT ES256 firmado); RED verificado rompiendo cada fix por separado (CORS, fail-open, ownership, validación); 48/48 backend; tsc+vite OK; compileDebugKotlin OK |
-| T3 | S2 | inline | ⬜ pendiente | VM A1 en Oracle (VCN + instancia + Docker) vía oci/SSH |
-| T4 | S4 | inline | ⬜ pendiente | worker Python (faster-whisper + diarize) desplegado en la VM, API interna |
-| T5 | S4, S7 | inline | ⬜ pendiente | backend: cola de transcripción en DB + 202/polling contra worker |
+| T3 | S2 | inline | 🔄 en curso | VM A1 pendiente de capacidad Oracle (loops con backoff 3 min en background: /tmp/launch-both.log); ArSoftME migrada con respaldo verificado (checksum+integrity) — restore automático encadenado (/tmp/restore-cajas.log) |
+| T4 | S4 | inline | 🔄 parcial | commit `dc4706b`: worker Python completo + 11 tests locales (merge RED→GREEN, API mock); deploy a la VM queda para cuando esté T3 |
+| T5 | S4, S7 | inline | ✅ hecho | commit `b7da6dc`: jobs table (migración 002), runner con SKIP LOCKED+heartbeat, transcribe 202+cola con fallback Groq honesto, clientes poll (web 90 min / Android); 6 tests cola; 54/54 backend, tsc+vite OK, compileDebugKotlin OK |
 | T6 | S5 | inline | ⬜ pendiente | adaptador LLM (gemini/groq) + eliminar techo TPM global |
 | T7 | S1, S7 | inline | ⬜ pendiente | cuota 2 h/usuario/día en DB + rate limiting por usuario |
 | T8 | S3 | inline | ⬜ pendiente | integración diarización → segments.speaker real + guard en prompts |

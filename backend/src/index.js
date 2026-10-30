@@ -25,6 +25,7 @@ import {
   activeJob,
 } from './db.js';
 import { startRunner, HOSTNAME } from './jobs.js';
+import { chat, llmAvailable, llmInfo } from './llm.js';
 import { removeAudioFile, cleanupOrphanAudio, defaultUploadsDir } from './cleanup.js';
 import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
@@ -107,18 +108,16 @@ app.addHook('onRequest', async (req, reply) => {
 const OPENAI_KEY = process.env.OPENAI_API_KEY || '';
 const OPENAI_BASE = process.env.OPENAI_BASE_URL || 'https://api.groq.com/openai/v1';
 const STT_MODEL = process.env.STT_MODEL || 'whisper-large-v3';
-const CHAT_MODEL = process.env.CHAT_MODEL || 'openai/gpt-oss-120b';
+// Timeout de STT (Groq/worker): sin signal, un request colgado deja la llamada
+// HTTP abierta para siempre. Debajo del read timeout de Android (180 s).
+// El timeout del LLM vive en llm.js (LLM_TIMEOUT_MS).
+const STT_TIMEOUT_MS = Number(process.env.STT_TIMEOUT_MS || 150_000);
 // Worker de transcripción propio (Oracle): STT + diarización de speakers.
 // Si WORKER_URL no está, se cae a Groq (dev local sin worker).
 const WORKER_URL = (process.env.WORKER_URL || '').replace(/\/$/, '');
 const WORKER_TOKEN = process.env.WORKER_TOKEN || '';
 // 2 h de audio en la VM (2 OCPU) puede tardar hasta ~90 min con cola.
 const WORKER_TIMEOUT_MS = Number(process.env.WORKER_TIMEOUT_MS || 10_800_000);
-// Timeouts de Groq: sin signal, un request colgado deja la llamada HTTP abierta
-// para siempre (y al usuario esperando). Debajo del read timeout de Android
-// (180 s). Ver .env.example.
-const STT_TIMEOUT_MS = Number(process.env.STT_TIMEOUT_MS || 150_000);
-const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 150_000);
 
 const now = () => new Date().toISOString();
 const id = () => Math.random().toString(36).slice(2, 10);
@@ -145,41 +144,11 @@ function mimeFor(filePath) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// El plan gratuito de Groq limita gpt-oss-120b a 8000 tokens por minuto (TPM).
-// Llevamos una ventana de 60 s y esperamos antes de mandar otro pedido grande.
-const chatWindow = [];
-const TPM_BUDGET = 7000;
-
-function estimateTokens(text) {
-  return Math.ceil(String(text || '').length / 3.5);
-}
-
-function estimateMessagesTokens(messages) {
-  return messages.reduce((n, m) => n + estimateTokens(m.content) + 8, 0);
-}
-
-async function paceChat(messages, maxTokens) {
-  const estimated = estimateMessagesTokens(messages) + maxTokens;
-  if (estimated > TPM_BUDGET) {
-    throw new Error(`Pedido demasiado grande (${estimated} tokens); hay que dividir la transcripción`);
-  }
-  for (;;) {
-    const now = Date.now();
-    while (chatWindow.length && now - chatWindow[0].at > 60_000) chatWindow.shift();
-    const used = chatWindow.reduce((n, u) => n + u.tokens, 0);
-    if (used + estimated <= TPM_BUDGET) {
-      chatWindow.push({ at: now, tokens: estimated });
-      return;
-    }
-    const wait = 60_000 - (now - chatWindow[0].at) + 500;
-    await sleep(Math.max(wait, 1000));
-  }
-}
-
 /**
- * fetch a Groq con timeout. Errores de red o de timeout se marcan con
+ * fetch con timeout. Errores de red o de timeout se marcan con
  * upstream=true para que el handler responda 5xx (proveedor caído/colgado)
- * en vez de un 500 local genérico.
+ * en vez de un 500 local genérico. Usado por STT (Groq/worker) — el LLM va
+ * por llm.js (adaptador gemini/groq con pacer propio).
  */
 async function groqFetch(what, url, options, timeoutMs) {
   let res;
@@ -194,28 +163,6 @@ async function groqFetch(what, url, options, timeoutMs) {
     throw err;
   }
   return res;
-}
-
-async function openaiChat(messages, { json = false, maxTokens = 3000 } = {}) {
-  await paceChat(messages, maxTokens);
-  const res = await groqFetch(
-    'AI chat',
-    `${OPENAI_BASE}/chat/completions`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY}` },
-      body: JSON.stringify({
-        model: CHAT_MODEL,
-        messages,
-        max_completion_tokens: maxTokens,
-        ...(json ? { response_format: { type: 'json_object' } } : {}),
-      }),
-    },
-    LLM_TIMEOUT_MS,
-  );
-  if (!res.ok) throw new Error(`AI chat error: ${res.status} ${await res.text()}`);
-  const j = await res.json();
-  return j.choices[0].message.content;
 }
 
 async function openaiTranscribe(filePath) {
@@ -270,8 +217,8 @@ function parseJsonLooseCtx(text, ctx) {
 app.get('/health', async () => ({
   ok: true,
   openai: !!OPENAI_KEY,
-  stt: STT_MODEL,
-  chat: CHAT_MODEL,
+  stt: WORKER_URL ? 'worker' : STT_MODEL,
+  llm: llmInfo(),
   auth: jwks ? 'supabase' : 'none',
 }));
 
@@ -516,12 +463,12 @@ async function summarizeChunk(chunk, index, total) {
   // generate JSON" y los retries no alcanzaban para clases largas.
   let raw;
   try {
-    raw = await openaiChat(messages, { json: false, maxTokens: 700 });
+    raw = await chat(messages, { json: false, maxTokens: 700 });
   } catch (e) {
     if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
     console.warn(`[summarize] bloque ${index + 1} falló, reintento:`, e.message.slice(0, 140));
     await sleep(2000);
-    raw = await openaiChat(messages, { json: false, maxTokens: 700 });
+    raw = await chat(messages, { json: false, maxTokens: 700 });
   }
   return parseChunkText(raw);
 }
@@ -546,7 +493,7 @@ async function summarizeChunkSafe(chunk, index, total, depth = 0) {
 }
 
 async function condensePartsChunk(text, index, total) {
-  const raw = await openaiChat([
+  const raw = await chat([
     { role: 'system', content: MERGE_SYSTEM_PROMPT },
     { role: 'user', content: `Parte ${index + 1} de ${total}:\n\n${text}` },
   ], { maxTokens: 900 });
@@ -596,12 +543,12 @@ async function runSummaryJob(id, userId, template) {
   ];
   let rawSummary;
   try {
-    rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
+    rawSummary = await chat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
   } catch (e) {
     if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
     console.warn('[summarize] call del resumen falló, reintento:', e.message.slice(0, 140));
     await sleep(2000);
-    rawSummary = await openaiChat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
+    rawSummary = await chat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
   }
   const summaryText = extractSummaryText(rawSummary);
   if (!summaryText) throw new Error('La IA no devolvió un resumen válido');
@@ -614,13 +561,13 @@ async function runSummaryJob(id, userId, template) {
 
   let raw;
   try {
-    raw = await openaiChat(messages, { json: true, maxTokens: 4000 });
+    raw = await chat(messages, { json: true, maxTokens: 4000 });
   } catch (e) {
     // 413/429: reintentar con menos texto ayuda. Timeout: el reintento solo
     // duplica la espera, así que se propaga al runner (reintentos con backoff).
     if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
     console.warn('[summarize] JSON del mindmap falló, reintento simple:', e.message.slice(0, 140));
-    raw = await openaiChat(messages, { json: false, maxTokens: 4000 });
+    raw = await chat(messages, { json: false, maxTokens: 4000 });
   }
 
   const parsed = parseJsonLooseCtx(raw, 'JSON del mindmap inválido');
@@ -633,7 +580,9 @@ async function runSummaryJob(id, userId, template) {
 app.post('/recordings/:id/summarize', async (req, reply) => {
   const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
-  if (!OPENAI_KEY) return reply.code(500).send({ error: 'OPENAI_API_KEY no configurada' });
+  if (!llmAvailable()) {
+    return reply.code(500).send({ error: 'Sin proveedor LLM: configure GEMINI_API_KEY o OPENAI_API_KEY' });
+  }
   if (!r.transcript.length) return reply.code(400).send({ error: 'La grabación no tiene transcripción' });
 
   const template = req.body?.template || 'general';
@@ -701,7 +650,9 @@ function relevantTranscript(segments, question, maxChars = 12_000) {
 app.post('/recordings/:id/ask', async (req, reply) => {
   const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
-  if (!OPENAI_KEY) return reply.code(500).send({ error: 'OPENAI_API_KEY no configurada' });
+  if (!llmAvailable()) {
+    return reply.code(500).send({ error: 'Sin proveedor LLM: configure GEMINI_API_KEY o OPENAI_API_KEY' });
+  }
 
   const question = req.body?.question || '';
   if (!question.trim()) return reply.code(400).send({ error: 'Pregunta vacía' });
@@ -714,7 +665,7 @@ app.post('/recordings/:id/ask', async (req, reply) => {
   const summaryContext = r.summary ? `Resumen de la clase:\n${r.summary}\n\n` : '';
 
   try {
-    const answer = await openaiChat([
+    const answer = await chat([
       { role: 'system', content: 'Respondé preguntas sobre la transcripción. Sé preciso y breve. Si la respuesta no está en la transcripción, decilo.' },
       { role: 'user', content: `${summaryContext}Transcripción (fragmentos relevantes):\n${transcriptText}\n\nPregunta: ${question}` },
     ], { maxTokens: 1200 });
