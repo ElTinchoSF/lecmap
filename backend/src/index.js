@@ -836,6 +836,21 @@ async function workerTranscribe(audioPath) {
   return res.json();
 }
 
+/**
+ * S3: los IDs crudos de diarización (S0, SPEAKER_00) se muestran como
+ * "Hablante N" por orden de primera aparición: legibles en la UI, sin exponer
+ * el formato interno del worker, y listos para el rename por nota (T9).
+ * Agrupa por label real del worker (no alternancia por índice).
+ */
+function displaySpeakers(segments) {
+  const seen = new Map();
+  return segments.map((s) => {
+    const raw = String(s.speaker || 'SPEAKER_00');
+    if (!seen.has(raw)) seen.set(raw, `Hablante ${seen.size + 1}`);
+    return { ...s, speaker: seen.get(raw) };
+  });
+}
+
 async function transcribeHandler(job) {
   const r = await getRecording(job.recording_id, job.user_id);
   if (!r) return; // la nota se borró en el medio
@@ -866,7 +881,10 @@ async function transcribeHandler(job) {
   }
   if (segments.length === 0) throw new Error('La transcripción no devolvió segmentos');
 
-  await saveTranscript(r.id, r.userId, segments);
+  // job.user_id, no r.userId: toRecording no expone userId, así que r.userId
+  // era undefined y estos UPDATEs (ready/duration/audioPath) matcheaban 0 filas.
+  segments = displaySpeakers(segments);
+  await saveTranscript(r.id, job.user_id, segments);
 
   // S1: la cuota se estimó al subir (bytes o duración del cliente); acá la
   // reconciliamos con la duración REAL del audio según whisper — o, si el
@@ -874,10 +892,10 @@ async function transcribeHandler(job) {
   const measured = Number.isFinite(realDuration) && realDuration > 0
     ? realDuration
     : Math.max(...segments.map((s) => s.end));
-  if (measured > 0) await setDurationSeconds(r.id, r.userId, Math.round(measured));
+  if (measured > 0) await setDurationSeconds(r.id, job.user_id, Math.round(measured));
   // La transcripción ya está en la base: el servidor no necesita el audio.
   await removeAudioFile(r.audioPath, app.log);
-  await setAudioPath(r.id, r.userId, null);
+  await setAudioPath(r.id, job.user_id, null);
   console.log(`[transcribe] ${r.id}: ${segments.length} segmentos listos`);
 }
 

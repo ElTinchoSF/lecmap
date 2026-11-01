@@ -140,3 +140,10 @@ test('mindmapSystemPrompt etiqueta ejemplos y arma Trabajos y consignas', () => 
   assert.match(p, /Trabajos y consignas/);
   assert.match(p, /fecha límite/i);
 });
+
+test('S3 guard: mindmapSystemPrompt no trata el label de hablante como rol', () => {
+  const p = mindmapSystemPrompt('general');
+  assert.match(p, /hablante/i, 'el prompt debe hablar de hablantes');
+  assert.match(p, /no.*(infieras|asumas|asuma|interpretes|deduzcas).*rol|arbitrario/i,
+    'el prompt debe declarar que el label de hablante no es un rol');
+});

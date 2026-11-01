@@ -260,6 +260,8 @@ function mindmapSystemPrompt(template) {
     + 'Si la clase trata un solo tema central, devolvé UNA sola sección. '
     + 'Dividí por tema: si una sección agrupa más de dos temas centrales, partila en varias — preferí secciones acotadas a un tema antes que una enorme. '
     + 'Marcá los ejemplos del docente empezando el point o detail con "Ejemplo:", no como teoría. '
+    + 'Las etiquetas de hablante entre corchetes ([Hablante N]) son identificadores arbitrarios '
+    + 'de diarización: no infieras quién es docente o alumno por la etiqueta, solo por el contenido. '
     + 'Si hay trabajos o consignas, reservá una sección "Trabajos y consignas" (layout "topics"): cada tarea es una rama con su fecha límite (ej: "Entrega final — 15/12"). '
     + 'NO hay límite de secciones, temas, ramas, sub-ramas, puntos, elementos, pasos, eventos, términos, causas ni problemas: usá tantos como necesite la clase para cubrir TODAS las ideas principales. '
     + 'Si el tema lo pide, anidá sub-ramas dentro de una rama usando su campo "branches". '
