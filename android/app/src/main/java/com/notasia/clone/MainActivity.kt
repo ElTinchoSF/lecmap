@@ -852,7 +852,17 @@ private fun Detail(
     val segments = rec.transcript.orEmpty()
     if (segments.isNotEmpty()) {
       Spacer(Modifier.height(18.dp))
-      TranscriptCard(title = rec.title.orEmpty(), segments = segments)
+      // T9 (S3): renombrar hablante por nota. Nota pura de servidor: serverId
+      // null pero el id ES el id del server (mismo criterio que onRename).
+      val speakerServerId = rec.serverId ?: rec.id?.takeIf { rec.localId == null }
+      TranscriptCard(
+        title = rec.title.orEmpty(),
+        segments = segments,
+        canRename = speakerServerId != null,
+        onRenameSpeaker = { from, to ->
+          speakerServerId?.let { vm.renameSpeaker(it, from, to) }
+        },
+      )
     }
 
     Spacer(Modifier.height(18.dp))
@@ -893,9 +903,17 @@ private fun Detail(
 }
 
 @Composable
-private fun TranscriptCard(title: String, segments: List<SegmentDto>) {
+private fun TranscriptCard(
+  title: String,
+  segments: List<SegmentDto>,
+  canRename: Boolean = false,
+  onRenameSpeaker: (from: String, to: String) -> Unit = { _, _ -> },
+) {
   val context = LocalContext.current
   var exportTimes by remember { mutableStateOf(true) }
+  // T9: diálogo de renombre de hablante (label clickeable).
+  var renameTarget by remember { mutableStateOf<String?>(null) }
+  var renameDraft by remember { mutableStateOf("") }
 
   fun shareTranscript() {
     val extension = if (exportTimes) "csv" else "txt"
@@ -960,7 +978,18 @@ private fun TranscriptCard(title: String, segments: List<SegmentDto>) {
             )
             Column(Modifier.weight(1f)) {
               segment.speaker?.takeIf { it.isNotBlank() }?.let { speaker ->
-                Text(speaker, color = Accent2, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Text(
+                  speaker,
+                  color = Accent2,
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  modifier = Modifier
+                    .then(if (canRename) Modifier.clickable {
+                      renameTarget = speaker
+                      renameDraft = speaker
+                    } else Modifier)
+                    .padding(end = 4.dp),
+                )
               }
               Text(
                 segment.text.orEmpty(),
@@ -974,6 +1003,38 @@ private fun TranscriptCard(title: String, segments: List<SegmentDto>) {
         }
       }
     }
+  }
+
+  // T9 (S3): renombra el hablante de la nota en el server (overlay por nota;
+  // la diarización original en segments no se toca). Esc/Cancelar cierra.
+  renameTarget?.let { current ->
+    AlertDialog(
+      onDismissRequest = { renameTarget = null },
+      containerColor = Surface1,
+      title = { Text("Renombrar hablante", color = TextPrimary) },
+      text = {
+        OutlinedTextField(
+          value = renameDraft,
+          onValueChange = { renameDraft = it },
+          singleLine = true,
+          label = { Text("Nombre visible") },
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = Accent2,
+            unfocusedBorderColor = BorderCol,
+          ),
+        )
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          val to = renameDraft.trim().take(60)
+          if (to.isNotEmpty() && to != current) onRenameSpeaker(current, to)
+          renameTarget = null
+        }) { Text("Guardar", color = Accent) }
+      },
+      dismissButton = {
+        TextButton(onClick = { renameTarget = null }) { Text("Cancelar", color = TextSecondary) }
+      },
+    )
   }
 }
 

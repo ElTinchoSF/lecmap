@@ -449,6 +449,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   /**
+   * T9 (S3): renombra un hablante en el servidor (PATCH /recordings/:id/speakers)
+   * y sincroniza la copia local. El server devuelve el recording con todos los
+   * segmentos de ese hablante ya renombrados (overlay), no solo el editado.
+   */
+  fun renameSpeaker(serverId: String, from: String, to: String) {
+    viewModelScope.launch {
+      busy = true
+      error = null
+      try {
+        val detail = withContext(Dispatchers.IO) {
+          api.renameSpeaker(serverId, RenameSpeakerReq(from, to))
+        }
+        withContext(Dispatchers.IO) { store.updateFromServer(serverId, detail) }
+        // Nota pura de servidor: serverId null, el id ES el id del server.
+        val sel = selected
+        if (sel != null && (sel.serverId == serverId || sel.id == serverId)) {
+          selected = sel.copy(transcript = detail.transcript ?: sel.transcript)
+        }
+        refresh()
+      } catch (e: Exception) {
+        if (!handleGone(e)) error = friendly(e)
+      } finally {
+        busy = false
+      }
+    }
+  }
+
+  /**
    * S1: duración del archivo en segundos, para la cuota de audio diaria que
    * cobra el server. Si no se puede medir devuelve 0 y el server la estima
    * (ffprobe o bytes a 32 kbps). Decisión: el campo se manda siempre, aunque

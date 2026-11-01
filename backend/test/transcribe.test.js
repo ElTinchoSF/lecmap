@@ -25,6 +25,7 @@ const WORKER_SEGMENTS = [
 let pgTest;
 let db;
 let runner;
+let app;
 let stub;
 let uploadsDir;
 let audioFile;
@@ -53,6 +54,7 @@ before(async () => {
 
   const mod = await import('../src/index.js');
   runner = mod.runnerHandlers;
+  app = mod.app;
   db = await import('../src/db.js');
 }, { timeout: 60_000 });
 
@@ -90,4 +92,61 @@ test('S3: la diarización del worker llega a la DB agrupada y legible (no parida
   // El audio ya no se necesita tras transcribir (comportamiento preexistente).
   assert.equal(r.audioPath, null);
   assert.equal(r.durationSeconds, 20, 'duración reconciliada con la del worker');
+});
+
+// ---------- T9: renombrar hablantes por nota (S3) ----------
+const DEV = '00000000-0000-4000-8000-000000000000';
+
+async function makeNoteWithSpeakers(id) {
+  await db.createRecording({
+    id, userId: DEV, title: 'Clase', createdAt: new Date().toISOString(),
+  });
+  await db.saveTranscript(id, DEV, [
+    { start: 0, end: 5, speaker: 'Hablante 1', text: 'hola' },
+    { start: 5, end: 9, speaker: 'Hablante 1', text: 'chau' },
+    { start: 9, end: 12, speaker: 'Hablante 2', text: 'ok' },
+  ]);
+}
+
+const patchSpeaker = (id, from, to) => app.inject({
+  method: 'PATCH',
+  url: `/recordings/${id}/speakers`,
+  headers: { 'content-type': 'application/json' },
+  payload: { from, to },
+});
+const getSpeakers = async (id) => (await app.inject({ method: 'GET', url: `/recordings/${id}` }))
+  .json().transcript.map((s) => s.speaker);
+
+test('T9: el renombre persiste por nota en la API sin tocar la diarización original', async () => {
+  await makeNoteWithSpeakers('notarename');
+
+  const res = await patchSpeaker('notarename', 'Hablante 1', 'Docente Pérez');
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual(await getSpeakers('notarename'),
+    ['Docente Pérez', 'Docente Pérez', 'Hablante 2'], 'el mapa se aplica al leer');
+
+  // La diarización original queda intacta en segments (S3: sin alterarla).
+  const { rows } = await db.pool.query(
+    'SELECT speaker FROM segments WHERE recording_id = $1 ORDER BY idx', ['notarename']);
+  assert.deepEqual(rows.map((r) => r.speaker),
+    ['Hablante 1', 'Hablante 1', 'Hablante 2'], 'segments conserva los labels originales');
+});
+
+test('T9: renombrar desde el nombre visible, revivir, aislar por nota y rechazos', async () => {
+  await makeNoteWithSpeakers('notaB');
+
+  // Desde el nombre visible (ya renombrada en notarename).
+  assert.equal((await patchSpeaker('notarename', 'Docente Pérez', 'Profe G.')).statusCode, 200);
+  assert.deepEqual(await getSpeakers('notarename'), ['Profe G.', 'Profe G.', 'Hablante 2']);
+
+  // Revivir con to vacío vuelve al label original.
+  assert.equal((await patchSpeaker('notarename', 'Profe G.', '')).statusCode, 200);
+  assert.deepEqual(await getSpeakers('notarename'), ['Hablante 1', 'Hablante 1', 'Hablante 2']);
+
+  // El renombre vive en la nota: notaB no se afecta.
+  assert.deepEqual(await getSpeakers('notaB'), ['Hablante 1', 'Hablante 1', 'Hablante 2']);
+
+  assert.equal((await patchSpeaker('notaB', 'NoExiste', 'X')).statusCode, 400, 'label desconocido → 400');
+  assert.equal((await patchSpeaker('notaB', 'Hablante 1', 'Hablante 2')).statusCode, 400,
+    'nombre duplicado en la misma nota → 400');
 });

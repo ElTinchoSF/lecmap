@@ -25,7 +25,14 @@ const toRecording = (row, segments = []) => row && ({
   summary: row.summary || null,
   mindmap: row.mindmap ?? null,
   durationSeconds: row.duration_seconds ?? null,
-  transcript: segments.map((s) => ({ start: s.start, end: s.end, speaker: s.speaker, text: s.text })),
+  // T9 (S3): overlay {label original → visible} sobre segments.speaker;
+  // la diarización original en DB queda intacta.
+  transcript: segments.map((s) => ({
+    start: s.start,
+    end: s.end,
+    speaker: (row.speaker_labels || {})[s.speaker] || s.speaker,
+    text: s.text,
+  })),
   createdAt: row.created_at,
 });
 
@@ -171,6 +178,46 @@ export async function updateTitle(id, userId, title) {
   await pool.query(
     'UPDATE recordings SET title = $1 WHERE id = $2 AND user_id = $3',
     [title, id, userId],
+  );
+  return getRecording(id, userId);
+}
+
+/**
+ * T9 (S3): renombra un hablante de la nota SIN tocar la diarización original.
+ * Solo escribe el mapa speaker_labels {label original → visible}; los valores
+ * visibles deben seguir siendo únicos por nota (evita dos "Docente" iguales).
+ * `from` acepta el label original o el visible actual; `to` vacío revierte.
+ * Devuelve { error, status } o el recording actualizado.
+ */
+export async function renameSpeaker(id, userId, from, to) {
+  const { rows } = await pool.query(
+    'SELECT speaker_labels FROM recordings WHERE id = $1 AND user_id = $2',
+    [id, userId],
+  );
+  if (!rows[0]) return { error: 'not found', status: 404 };
+  const labels = rows[0].speaker_labels || {};
+  const { rows: segs } = await pool.query(
+    'SELECT DISTINCT speaker FROM segments WHERE recording_id = $1', [id]);
+  const originals = segs.map((s) => s.speaker);
+
+  // Resolver from → label original: puede venir como original o como visible.
+  let original = Object.keys(labels).find((k) => k === from || labels[k] === from);
+  if (!original && originals.includes(from)) original = from;
+  if (!original) return { error: `no hay hablante "${from}" en esta nota`, status: 400 };
+
+  const next = { ...labels };
+  if (!to || to === original) delete next[original]; // revertir
+  else next[original] = to;
+
+  // Los visibles resultantes deben ser únicos (incluye labels sin renombrar).
+  const visible = originals.map((o) => next[o] || o);
+  if (new Set(visible).size !== visible.length) {
+    return { error: `ya hay un hablante llamado "${to}" en esta nota`, status: 400 };
+  }
+
+  await pool.query(
+    'UPDATE recordings SET speaker_labels = $1 WHERE id = $2 AND user_id = $3',
+    [Object.keys(next).length ? next : null, id, userId],
   );
   return getRecording(id, userId);
 }

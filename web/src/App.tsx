@@ -868,6 +868,8 @@ export default function App() {
   // S2/S4: diálogo de nombre — tras guardar una toma o al renombrar una nota.
   const [rename, setRename] = useState<{ localId: string | null; serverId: string | null; suggested: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  // T9 (S3): edición inline de hablante — renombre por nota (PATCH /speakers).
+  const [speakerEdit, setSpeakerEdit] = useState<{ idx: number; from: string; draft: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeSeg, setActiveSeg] = useState<number>(-1);
   const [error, setError] = useState<string | null>(null);
@@ -1318,6 +1320,34 @@ export default function App() {
     await refreshLocals();
   };
 
+  // T9 (S3): renombra el hablante de la nota en el server y aplica el
+  // resultado (el server devuelve el recording con el overlay aplicado).
+  const saveSpeakerEdit = async () => {
+    const edit = speakerEdit;
+    const sid = sel?.serverId;
+    setSpeakerEdit(null);
+    if (!edit || !sid) return;
+    const to = edit.draft.trim();
+    if (!to || to === edit.from) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await apiFetch(`/recordings/${sid}/speakers`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: edit.from, to }),
+      });
+      if (!r.ok) throw new Error(await responseError(r, `HTTP ${r.status}`));
+      const detail: Recording = await r.json();
+      await syncLocal(sid, detail);
+      setSel((prev) => (prev && prev.serverId === sid ? { ...prev, transcript: detail.transcript } : prev));
+    } catch (e) {
+      setError(errText(e, 'No se pudo renombrar el hablante'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const ask = async () => {
     if (!sel?.serverId) {
       setError('Analizá la nota primero para poder preguntarle a ApIA.');
@@ -1726,7 +1756,31 @@ export default function App() {
                       <div key={i} className={`transcript-line ${activeSeg === i ? 'active' : ''}`} onClick={() => seek(s.start)}>
                         <div className="transcript-time">{fmtTimestamp(s.start)}</div>
                         <div className="transcript-text">
-                          {s.speaker && <span className="transcript-speaker">{s.speaker}</span>}
+                          {s.speaker && speakerEdit?.idx === i ? (
+                            <input
+                              className="transcript-speaker-edit"
+                              value={speakerEdit.draft}
+                              autoFocus
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => setSpeakerEdit({ ...speakerEdit, draft: e.target.value })}
+                              onBlur={saveSpeakerEdit}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') saveSpeakerEdit();
+                                if (e.key === 'Escape') setSpeakerEdit(null);
+                              }}
+                            />
+                          ) : s.speaker ? (
+                            <span
+                              className="transcript-speaker"
+                              title="Renombrar hablante"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (sel.serverId) setSpeakerEdit({ idx: i, from: s.speaker, draft: s.speaker });
+                              }}
+                            >
+                              {s.speaker}
+                            </span>
+                          ) : null}
                           {s.text}
                         </div>
                       </div>

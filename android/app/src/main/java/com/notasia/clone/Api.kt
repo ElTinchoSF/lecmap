@@ -54,6 +54,8 @@ data class AskRes(val answer: String? = null)
 
   data class RenameReq(val title: String)
 
+  data class RenameSpeakerReq(val from: String, val to: String)
+
 interface Api {
   @GET("recordings")
   suspend fun list(
@@ -100,6 +102,10 @@ interface Api {
   /** S4: renombrar la nota en el servidor (ruta nueva PATCH /recordings/:id). */
   @PATCH("recordings/{id}")
   suspend fun rename(@Path("id") id: String, @Body body: RenameReq): RecordingDto
+
+  /** T9 (S3): renombrar un hablante de la nota (to vacío revierte). */
+  @PATCH("recordings/{id}/speakers")
+  suspend fun renameSpeaker(@Path("id") id: String, @Body body: RenameSpeakerReq): RecordingDto
 }
 
 /** Resultado de validar la URL del backend. */

@@ -17,6 +17,7 @@ CREATE TABLE recordings (
   summary text,
   mindmap jsonb,
   duration_seconds integer,
+  speaker_labels jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE segments (

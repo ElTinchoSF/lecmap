@@ -404,6 +404,20 @@ body {
   font-size: 0.78rem;
   font-weight: 600;
   margin-right: 6px;
+  cursor: pointer;
+}
+
+/* T9: edición inline del hablante (Enter guarda, Esc cancela). */
+.transcript-speaker-edit {
+  color: var(--accent2);
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin-right: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--accent2);
+  border-radius: 4px;
+  padding: 1px 5px;
+  width: 10em;
 }
 
 .section {

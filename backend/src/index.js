@@ -19,6 +19,7 @@ import {
   setAudioPath,
   setDurationSeconds,
   updateTitle,
+  renameSpeaker,
   resetInterrupted,
   deleteRecording,
   recordingOwnsAudio,
@@ -436,6 +437,17 @@ app.patch('/recordings/:id', async (req, reply) => {
   const r = await getRecording(req.params.id, req.userId);
   if (!r) return reply.code(404).send({ error: 'not found' });
   return updateTitle(r.id, req.userId, title);
+});
+
+// T9 (S3): renombra un hablante de la nota. { from, to } — to vacío revierte.
+// El renombre vive en speaker_labels; la diarización original no se toca.
+app.patch('/recordings/:id/speakers', async (req, reply) => {
+  const from = typeof req.body?.from === 'string' ? req.body.from.trim() : '';
+  const to = typeof req.body?.to === 'string' ? req.body.to.trim() : '';
+  if (!from) return reply.code(400).send({ error: 'from requerido' });
+  const out = await renameSpeaker(req.params.id, req.userId, from, to);
+  if (out?.error) return reply.code(out.status || 400).send({ error: out.error });
+  return out;
 });
 
 app.delete('/recordings/:id', async (req, reply) => {
