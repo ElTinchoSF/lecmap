@@ -1,0 +1,6 @@
+# LecMap API — HTTPS automático (Let's Encrypt) vía Caddy.
+# Requiere DNS: api.lecmap.app → A 2.31.197.193 (Cloudflare, DNS only).
+
+api.lecmap.app {
+	reverse_proxy backend:3001
+}

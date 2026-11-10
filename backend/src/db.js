@@ -6,9 +6,15 @@ dns.setServers(['8.8.8.8', '1.1.1.1']);
 
 const { Pool } = pg;
 
+// SSL del pool: producción fuerza SSL (Render lo exige). En la VM self-hosted
+// (Hetzner, T10) Postgres no lo tiene: DATABASE_SSL=disable lo apaga.
+const ssl = process.env.DATABASE_SSL === 'disable'
+  ? false
+  : process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false;
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  ssl,
 });
 // Exportado para tests (simular locks stale) y para tareas directas.
 export { pool };

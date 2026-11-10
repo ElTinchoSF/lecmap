@@ -59,5 +59,11 @@ def transcribe():
                 pass
 
 
+def bind_host() -> str:
+    """Interfaz de escucha: 127.0.0.1 por defecto (VM de máquina única);
+    en Compose se setea HOST=0.0.0.0 para que el backend alcance al worker."""
+    return os.environ.get("HOST", "127.0.0.1")
+
+
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=int(os.environ.get("PORT", "8080")))
+    app.run(host=bind_host(), port=int(os.environ.get("PORT", "8080")))
