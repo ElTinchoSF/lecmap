@@ -524,7 +524,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) { api.uploadAudio(serverId, part, durationPartOf(file)) }
           }
         }
-        // 202: la cola procesa en background; esperamos los segmentos.
+        // 202: encolar en el servidor si la nota aún no tiene transcripción
+        // (sin este POST no hay job que procese) y esperar los segmentos.
+        if (rec.transcript.isNullOrEmpty()) {
+          withContext(Dispatchers.IO) { api.transcribe(serverId) }
+        }
         awaitTranscribe(serverId)
         val detail = withContext(Dispatchers.IO) { api.get(serverId) }
         store.updateFromServer(serverId, detail)
@@ -612,7 +616,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
               throw IllegalStateException("No hay audio disponible para transcribir")
             }
           }
-          // 202: la cola procesa en background; esperamos los segmentos.
+          // 202: encolar en el servidor (obligatorio — sin este POST no hay
+          // job) y esperar los segmentos con polling.
+          withContext(Dispatchers.IO) { api.transcribe(serverId) }
           awaitTranscribe(serverId)
           current = withContext(Dispatchers.IO) { api.get(serverId) }
           store.updateFromServer(serverId, current)

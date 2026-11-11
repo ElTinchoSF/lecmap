@@ -87,8 +87,11 @@ interface Api {
     @Part duration: MultipartBody.Part,
   ): RecordingDto
 
-  // NOTA: POST /transcribe responde 202 (encolado); el cliente espera con
-  // awaitTranscribe haciendo polling a GET. No hay llamada síncrona.
+  // POST /transcribe responde 202 y ENCOLA el job en la cola del backend;
+  // el cliente espera los segmentos con awaitTranscribe (polling a GET).
+  // Obligatorio: sin este POST nadie encola la transcripción (regresión de T5).
+  @POST("recordings/{id}/transcribe")
+  suspend fun transcribe(@Path("id") id: String): RecordingDto
 
   @POST("recordings/{id}/summarize")
   suspend fun summarize(@Path("id") id: String, @Body body: SummarizeReq): RecordingDto
