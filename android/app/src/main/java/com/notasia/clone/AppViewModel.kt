@@ -524,9 +524,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             withContext(Dispatchers.IO) { api.uploadAudio(serverId, part, durationPartOf(file)) }
           }
         }
-        // 202: encolar en el servidor si la nota aún no tiene transcripción
-        // (sin este POST no hay job que procese) y esperar los segmentos.
-        if (rec.transcript.isNullOrEmpty()) {
+        // 202: encolar si el SERVIDOR no tiene transcripción — la copia local
+        // puede tener una vieja que el servidor no conoce. Polling hasta ready.
+        val remote = withContext(Dispatchers.IO) { api.get(serverId) }
+        if (remote.transcript.isNullOrEmpty()) {
           withContext(Dispatchers.IO) { api.transcribe(serverId) }
         }
         awaitTranscribe(serverId)
@@ -601,6 +602,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
           serverId = created.id ?: throw IllegalStateException("El servidor no devolvió un id")
           store.setServerId(l.localId, serverId)
           current = created
+        } else {
+          // El estado de referencia es el del SERVIDOR: la copia local puede
+          // traer transcripción/resumen que el servidor no conoce (p. ej.
+          // esta nota se re-subió tras el vaciado de la DB).
+          current = withContext(Dispatchers.IO) { api.get(serverId) }
         }
 
         if (current.transcript.isNullOrEmpty()) {
