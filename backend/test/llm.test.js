@@ -51,6 +51,9 @@ test('gemini: endpoint, Bearer, max_tokens (no max_completion_tokens)', async ()
   assert.equal(calls[0].body.model, 'gemini-2.5-flash');
   assert.equal(calls[0].body.max_tokens, 500);
   assert.equal(calls[0].body.max_completion_tokens, undefined);
+  // Los tokens de pensamiento consumen max_tokens: sin reasoning_effort bajo,
+  // el corte trunca la respuesta visible (bug: resumen de71 min en643 chars).
+  assert.equal(calls[0].body.reasoning_effort, 'low');
 });
 
 test('gemini: flag json agrega response_format', async () => {
@@ -96,6 +99,7 @@ test('groq: endpoint por defecto, max_completion_tokens, modelo actual', async (
   assert.equal(calls[0].options.headers.Authorization, 'Bearer gsk-test');
   assert.equal(calls[0].body.model, 'openai/gpt-oss-120b');
   assert.equal(calls[0].body.max_completion_tokens, 700);
+  assert.equal(calls[0].body.reasoning_effort, undefined);
 });
 
 test('groq: mensaje sobre el presupuesto TPM lanza sin llamar al API', async () => {

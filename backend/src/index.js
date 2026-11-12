@@ -33,6 +33,7 @@ import { checkRateLimit } from './ratelimit.js';
 import { removeAudioFile, cleanupOrphanAudio, defaultUploadsDir } from './cleanup.js';
 import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
+import { upstreamAgent, upstreamFetch, FormData } from './net.js';
 
 const app = Fastify({ logger: true });
 const defaultOrigins = [
@@ -164,11 +165,19 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function groqFetch(what, url, options, timeoutMs) {
   let res;
   try {
-    res = await fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+    res = await upstreamFetch(url, {
+      ...options,
+      signal: AbortSignal.timeout(timeoutMs),
+      // sin esto undici aborta a los 300 s (headersTimeout default) — ver net.js
+      dispatcher: upstreamAgent,
+    });
   } catch (e) {
     const timedOut = e?.name === 'TimeoutError' || e?.name === 'AbortError';
+    const cause = e?.cause?.message || e?.cause?.code || '';
     const err = new Error(
-      timedOut ? `${what}: timeout tras ${timeoutMs} ms` : `${what}: ${e.message}`,
+      timedOut
+        ? `${what}: timeout tras ${timeoutMs} ms`
+        : `${what}: ${e.message}${cause ? ` (${cause})` : ''}`,
     );
     err.upstream = true;
     throw err;
@@ -554,18 +563,20 @@ app.post('/recordings/:id/transcribe', async (req, reply) => {
 
 const MAX_CHUNK_CHARS = 10_000;
 // Presupuesto del material que llega a los calls finales. paceChat rechaza
-// pedidos estimados en > 7000 tokens (TPM_BUDGET). El resumen y el mindmap se
-// generan en DOS calls separados para que el resumen no compita con el JSON
-// del mapa multi-sección por los tokens de salida. El call del resumen va en
+// pedidos estimados en > 7000 tokens (TPM_BUDGET) — solo aplica a groq; el
+// pacer de gemini está desactivado. El resumen y el mindmap se generan en
+// DOS calls separados para que el resumen no compita con el JSON del mapa
+// multi-sección por los tokens de salida. El call del resumen va en
 // TEXTO PLANO (sin response_format): el modo JSON de Groq con gpt-oss-120b
-// devolvía 400 "Failed to generate JSON" y el retry quedaba truncado:
-//   resumen: material (~2000) + prompt (~90) + SUMMARY_MAX_TOKENS (3000) ≈ 5100
-//   mindmap: material (~2000) + prompt (~900) + maxTokens (4000) ≈ 6900
-// Si el material lo supera, se condensa jerárquicamente en vez de truncarse.
+// devolvía 400 "Failed to generate JSON" y el retry quedaba truncado.
+// IMPORTANTE (gemini): max_tokens incluye los tokens de pensamiento — los
+// techos de abajo son techos de CORTE, no de gasto: con poco presupuesto el
+// modelo corta la respuesta visible a mitad de frase (bug del resumen de
+// 71 min en 643 chars). reasoning_effort=low + techos altos evitan el corte.
 const FINAL_MATERIAL_MAX_CHARS = 7_000;
-// Salida dedicada del resumen: alcanza para ~70 frases (~1000 palabras) del
-// techo de targetSummarySentences con holgura para verborragia del modelo.
-const SUMMARY_MAX_TOKENS = 3_000;
+// Salida del resumen: con reasoning_effort=low el texto visible ronda ~1000
+// tokens; el techo alto solo evita que el pensamiento lo recorte.
+const SUMMARY_MAX_TOKENS = 16_000;
 
 function transcriptChunks(
   segments,
@@ -598,12 +609,12 @@ async function summarizeChunk(chunk, index, total) {
   // generate JSON" y los retries no alcanzaban para clases largas.
   let raw;
   try {
-    raw = await chat(messages, { json: false, maxTokens: 700 });
+    raw = await chat(messages, { json: false, maxTokens: 2_000 });
   } catch (e) {
     if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
     console.warn(`[summarize] bloque ${index + 1} falló, reintento:`, e.message.slice(0, 140));
     await sleep(2000);
-    raw = await chat(messages, { json: false, maxTokens: 700 });
+    raw = await chat(messages, { json: false, maxTokens: 2_000 });
   }
   return parseChunkText(raw);
 }
@@ -631,7 +642,7 @@ async function condensePartsChunk(text, index, total) {
   const raw = await chat([
     { role: 'system', content: MERGE_SYSTEM_PROMPT },
     { role: 'user', content: `Parte ${index + 1} de ${total}:\n\n${text}` },
-  ], { maxTokens: 900 });
+  ], { maxTokens: 2_400 });
   return String(raw || '').trim() || text;
 }
 
@@ -696,13 +707,13 @@ async function runSummaryJob(id, userId, template) {
 
   let raw;
   try {
-    raw = await chat(messages, { json: true, maxTokens: 4000 });
+    raw = await chat(messages, { json: true, maxTokens: 16_000 });
   } catch (e) {
     // 413/429: reintentar con menos texto ayuda. Timeout: el reintento solo
     // duplica la espera, así que se propaga al runner (reintentos con backoff).
     if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
     console.warn('[summarize] JSON del mindmap falló, reintento simple:', e.message.slice(0, 140));
-    raw = await chat(messages, { json: false, maxTokens: 4000 });
+    raw = await chat(messages, { json: false, maxTokens: 16_000 });
   }
 
   const parsed = parseJsonLooseCtx(raw, 'JSON del mindmap inválido');

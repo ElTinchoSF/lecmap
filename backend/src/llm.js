@@ -107,6 +107,10 @@ export async function chat(messages, { json = false, maxTokens = 3000 } = {}) {
     messages,
     [p.maxTokensField]: maxTokens,
     ...(json ? { response_format: { type: 'json_object' } } : {}),
+    // Gemini cuenta los tokens de pensamiento dentro de max_tokens: con el
+    // presupuesto por defecto el corte llega a truncar la respuesta visible
+    // entera (resumen de71 min guardado en643 chars a mitad de frase).
+    ...(p.name === 'gemini' ? { reasoning_effort: 'low' } : {}),
   };
 
   const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 150_000);
