@@ -40,8 +40,25 @@ async function paceGroq(messages, maxTokens) {
   }
 }
 
+/**
+ * Elige el modelo según el tier del call.
+ *
+ * La cuota free de Gemini es POR MODELO, no global: gemini-3.6-flash da
+ * 20 req/día y gemini-3.5-flash-lite da 500 req/día, en buckets separados.
+ * Así que el pipeline reparte: 'main' (calidad) va al modelo caro y
+ * 'default' (volumen: chunks, condensado, mindmap, preguntas) al barato.
+ *
+ * Si no hay tier específico configurado, ambos caen a LLM_MODEL — comportamiento
+ * idéntico al anterior para quien no setee las variables nuevas.
+ */
+function modelForTier(baseModel, tier) {
+  const specific = tier === 'main' ? process.env.LLM_MODEL_MAIN : process.env.LLM_MODEL_BULK;
+  const chosen = (specific || '').trim() || baseModel;
+  return chosen;
+}
+
 /** Resuelve el proveedor actual. Lanza si falta la clave. */
-function resolveProvider() {
+function resolveProvider(tier = 'default') {
   const explicit = (process.env.LLM_PROVIDER || '').trim().toLowerCase();
   const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
   const groqKey = (process.env.OPENAI_API_KEY || '').trim();
@@ -51,11 +68,12 @@ function resolveProvider() {
 
   if (provider === 'gemini') {
     if (!geminiKey) throw new Error('Falta GEMINI_API_KEY (o setee LLM_PROVIDER=groq con OPENAI_API_KEY)');
+    const base = (process.env.LLM_MODEL || 'gemini-2.5-flash').trim();
     return {
       name: 'gemini',
       baseUrl: (process.env.LLM_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/$/, ''),
       key: geminiKey,
-      model: process.env.LLM_MODEL || 'gemini-2.5-flash',
+      model: modelForTier(base, tier),
       maxTokensField: 'max_tokens',
       paced: false,
     };
@@ -64,11 +82,12 @@ function resolveProvider() {
     throw new Error(`LLM_PROVIDER desconocido: "${provider}" (use "gemini" o "groq")`);
   }
   if (!groqKey) throw new Error('Falta OPENAI_API_KEY (o setee LLM_PROVIDER=gemini con GEMINI_API_KEY)');
+  const base = (process.env.LLM_MODEL || process.env.CHAT_MODEL || 'openai/gpt-oss-120b').trim();
   return {
     name: 'groq',
     baseUrl: (process.env.LLM_BASE_URL || process.env.OPENAI_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/$/, ''),
     key: groqKey,
-    model: process.env.LLM_MODEL || process.env.CHAT_MODEL || 'openai/gpt-oss-120b',
+    model: modelForTier(base, tier),
     maxTokensField: 'max_completion_tokens',
     paced: true,
   };
@@ -87,8 +106,17 @@ export function llmAvailable() {
 /** Info para GET /health. */
 export function llmInfo() {
   try {
-    const p = resolveProvider();
-    return { ok: true, provider: p.name, model: p.model };
+    const p = resolveProvider('default');
+    const main = resolveProvider('main');
+    return {
+      ok: true,
+      provider: p.name,
+      model: p.model,
+      // Modelo 'main' (sólo el call final del resumen) cuando difiere del
+      // bulk: permite verificar en /health que el enrutamiento por cuota
+      // está activo sin mirar el .env.
+      ...(main.model !== p.model ? { modelMain: main.model } : {}),
+    };
   } catch (e) {
     return { ok: false, provider: null, model: null, error: e.message };
   }
@@ -97,9 +125,12 @@ export function llmInfo() {
 /**
  * Chat completion multi-proveedor. Misma firma que el openaiChat anterior:
  * devuelve el string de content.
+ *
+ * `tier`: 'main' (calidad — resumen final) o 'default' (volumen). Ver
+ * modelForTier(): controla qué modelo responde según la cuota free por modelo.
  */
-export async function chat(messages, { json = false, maxTokens = 3000 } = {}) {
-  const p = resolveProvider();
+export async function chat(messages, { json = false, maxTokens = 3000, tier = 'default' } = {}) {
+  const p = resolveProvider(tier);
   if (p.paced) await paceGroq(messages, maxTokens);
 
   const body = {

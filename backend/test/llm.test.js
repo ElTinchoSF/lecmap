@@ -26,6 +26,8 @@ beforeEach(() => {
   delete process.env.LLM_PROVIDER;
   delete process.env.GEMINI_API_KEY;
   delete process.env.LLM_MODEL;
+  delete process.env.LLM_MODEL_MAIN;
+  delete process.env.LLM_MODEL_BULK;
   delete process.env.LLM_BASE_URL;
 });
 
@@ -150,4 +152,80 @@ test('auto-detección: sin gemini y con OPENAI_API_KEY elige groq', async () => 
   await llm.chat([{ role: 'user', content: 'hola' }]);
 
   assert.ok(calls[0].url.includes('api.groq.com'));
+});
+
+// --- Enrutamiento por tier (cuota free de Gemini es POR MODELO) -------------
+// gemini-3.6-flash: 20 RPD · gemini-3.5-flash-lite: 500 RPD. El resumen final
+// va al modelo caro (calidad/longitud) y todo lo demás al barato (volumen).
+
+test('tier main usa LLM_MODEL_MAIN; tier default usa LLM_MODEL_BULK', async () => {
+  process.env.LLM_PROVIDER = 'gemini';
+  process.env.GEMINI_API_KEY = 'gkey-123';
+  process.env.LLM_MODEL = 'modelo-base';
+  process.env.LLM_MODEL_MAIN = 'modelo-caro';
+  process.env.LLM_MODEL_BULK = 'modelo-barato';
+  mockFetchOk();
+
+  await llm.chat([{ role: 'user', content: 'a' }], { tier: 'main' });
+  await llm.chat([{ role: 'user', content: 'b' }], { tier: 'default' });
+
+  assert.equal(calls[0].body.model, 'modelo-caro');
+  assert.equal(calls[1].body.model, 'modelo-barato');
+});
+
+test('sin LLM_MODEL_MAIN/BULK ambos tiers caen a LLM_MODEL (retrocompatible)', async () => {
+  process.env.LLM_PROVIDER = 'gemini';
+  process.env.GEMINI_API_KEY = 'gkey-123';
+  process.env.LLM_MODEL = 'modelo-unico';
+  delete process.env.LLM_MODEL_MAIN;
+  delete process.env.LLM_MODEL_BULK;
+  mockFetchOk();
+
+  await llm.chat([{ role: 'user', content: 'a' }], { tier: 'main' });
+  await llm.chat([{ role: 'user', content: 'b' }], { tier: 'default' });
+
+  assert.equal(calls[0].body.model, 'modelo-unico');
+  assert.equal(calls[1].body.model, 'modelo-unico');
+});
+
+test('tier default sin LLM_MODEL_BULK no rompe y usa el modelo del proveedor', async () => {
+  process.env.LLM_PROVIDER = 'gemini';
+  process.env.GEMINI_API_KEY = 'gkey-123';
+  delete process.env.LLM_MODEL;
+  delete process.env.LLM_MODEL_MAIN;
+  delete process.env.LLM_MODEL_BULK;
+  mockFetchOk();
+
+  await llm.chat([{ role: 'user', content: 'hola' }], { tier: 'default' });
+
+  assert.equal(calls[0].body.model, 'gemini-2.5-flash');
+});
+
+test('tier main conserva reasoning_effort low (Gemini cuenta el thinking)', async () => {
+  process.env.LLM_PROVIDER = 'gemini';
+  process.env.GEMINI_API_KEY = 'gkey-123';
+  process.env.LLM_MODEL_MAIN = 'modelo-caro';
+  mockFetchOk();
+
+  await llm.chat([{ role: 'user', content: 'x' }], { tier: 'main', maxTokens: 4000 });
+
+  assert.equal(calls[0].body.reasoning_effort, 'low');
+  assert.equal(calls[0].body.max_tokens, 4000);
+});
+
+test('tier aplica también en groq (LLM_MODEL_MAIN/BULK sobre su proveedor)', async () => {
+  process.env.LLM_PROVIDER = 'groq';
+  process.env.OPENAI_API_KEY = 'gsk-test';
+  process.env.LLM_MODEL_MAIN = 'groq/caro';
+  process.env.LLM_MODEL_BULK = 'groq/barato';
+  mockFetchOk();
+
+  // maxTokens chico: el pacer de groq comparte ventana entre tests y con
+  // presupuestos grandes esperaría hasta 60 s sin aportar nada a este caso.
+  await llm.chat([{ role: 'user', content: 'a' }], { tier: 'main', maxTokens: 10 });
+  await llm.chat([{ role: 'user', content: 'b' }], { tier: 'default', maxTokens: 10 });
+
+  assert.equal(calls[0].body.model, 'groq/caro');
+  assert.equal(calls[1].body.model, 'groq/barato');
+  assert.equal(calls[0].body.max_completion_tokens, 10);
 });

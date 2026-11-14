@@ -46,6 +46,12 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.groq.com/openai/v1}
       LLM_MODEL: ${LLM_MODEL:-}
+      # Enrutamiento por cuota free (la cuota de Gemini es POR MODELO):
+      # MAIN = modelo de calidad para el call final del resumen;
+      # BULK = modelo de volumen para chunks/condensado/mindmap/preguntas.
+      # Sin estas claves ambos tiers caen a LLM_MODEL (comportamiento previo).
+      LLM_MODEL_MAIN: ${LLM_MODEL_MAIN:-}
+      LLM_MODEL_BULK: ${LLM_MODEL_BULK:-}
       CHAT_MODEL: ${CHAT_MODEL:-}
       QUOTA_AUDIO_SECONDS_PER_DAY: ${QUOTA_AUDIO_SECONDS_PER_DAY:-7200}
     volumes:

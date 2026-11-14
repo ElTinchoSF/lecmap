@@ -1,6 +1,9 @@
 # Worker de transcripción LecMap: faster-whisper (STT) + diarize (hablantes).
 # Python 3.12 (Ubuntu 24.04 de la VM). torch CPU arm64 ~200 MB.
 faster-whisper>=1.1,<2
+# av19 quitó av.open(metadata_errors=...) que faster-whisper 1.2 llama;
+# con av19 el decode revienta con TypeError y el job falla con500.
+av>=16,<19
 diarize>=0.1,<0.2
 flask>=3.0,<4
 # faster-whisper trae av/ctranslate2; diarize fija torch/torchaudio compatibles.

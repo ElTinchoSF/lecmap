@@ -25,13 +25,30 @@ Crear `.env` en este directorio (no se commitea). Generar secrets con `openssl r
 | `GEMINI_API_KEY` | opcional* | Con esta presente el backend usa **gemini** (free tier, S5) |
 | `OPENAI_API_KEY` | opcional* | Clave **Groq** (compatible OpenAI) — proveedor LLM actual en Render |
 | `OPENAI_BASE_URL` | no | Default `https://api.groq.com/openai/v1` |
-| `CHAT_MODEL` / `LLM_MODEL` | no | Modelo LLM (groq); default `openai/gpt-oss-120b` |
+| `CHAT_MODEL` / `LLM_MODEL` | no | Modelo LLM (groq); default `openai/gpt-oss-120b`. Con gemini es la base de ambos tiers |
+| `LLM_MODEL_MAIN` | no | Modelo del tier **calidad**: sólo el call final del resumen |
+| `LLM_MODEL_BULK` | no | Modelo del tier **volumen**: chunks, condensado, mindmap y preguntas |
 | `LLM_PROVIDER` | no | Override explícito: `gemini` \| `groq` |
 | `WHISPER_MODEL` | no | Default `small` (S4). Si la VM se queda sin RAM, bajar a `base` |
 | `CORS_ORIGINS` | no | Default: `https://lecmap.app,https://www.lecmap.app,https://eltinchosf.github.io` |
 | `QUOTA_AUDIO_SECONDS_PER_DAY` | no | Default `7200` (2 h, S1) |
 
 \* Hace falta al menos uno de los dos para Resumen / Mapa / ApIA.
+
+### Enrutamiento LLM por cuota (tier main / bulk)
+
+La cuota **free tier de Gemini es por modelo, no global**: `gemini-3.6-flash`
+tiene ~20 req/día y `gemini-3.5-flash-lite` ~500 req/día, en buckets separados.
+Por eso el pipeline reparte los calls:
+
+| Tier | Modelo (`.env` actual) | Calls | Por qué |
+|---|---|---|---|
+| `main` | `gemini-3.6-flash` | resumen final | La longitud del resumen depende de la calidad |
+| `default` (bulk) | `gemini-3.5-flash-lite` | chunks, condensado, mindmap, ApIA | Volumen; 5–21× más rápido y misma calidad de prosa |
+
+Si no se setean `LLM_MODEL_MAIN` / `LLM_MODEL_BULK`, ambos tiers usan
+`LLM_MODEL` (comportamiento anterior). Verificado en `GET /health`:
+`llm.model` = tier bulk, `llm.modelMain` = tier main (sólo aparece si difiere).
 
 ## DNS
 

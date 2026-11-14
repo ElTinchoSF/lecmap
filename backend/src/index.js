@@ -683,18 +683,27 @@ async function runSummaryJob(id, userId, template) {
   // mapa multi-sección no le robe salida (en el call único el resumen
   // quedaba en ~3 frases) y sin modo JSON, que con Groq devolvía 400
   // "Failed to generate JSON" y el retry quedaba truncado.
+  // tier 'main': este es el único call que va al modelo de calidad. La cuota
+  // free de Gemini es por modelo (20 req/día en 3.6-flash vs 500 en
+  // flash-lite), así que chunks/condensado/mindmap van al barato y acá
+  // gastamos 1 de esas 20 llamadas diarias — la longitud del resumen
+  // depende de este modelo.
   const summaryMessages = [
     { role: 'system', content: summarySystemPrompt(targetSentences) },
     { role: 'user', content: material },
   ];
   let rawSummary;
   try {
-    rawSummary = await chat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
+    rawSummary = await chat(summaryMessages, {
+      json: false, maxTokens: SUMMARY_MAX_TOKENS, tier: 'main',
+    });
   } catch (e) {
     if (/413|429|demasiado grande|timeout/i.test(e.message)) throw e;
     console.warn('[summarize] call del resumen falló, reintento:', e.message.slice(0, 140));
     await sleep(2000);
-    rawSummary = await chat(summaryMessages, { json: false, maxTokens: SUMMARY_MAX_TOKENS });
+    rawSummary = await chat(summaryMessages, {
+      json: false, maxTokens: SUMMARY_MAX_TOKENS, tier: 'main',
+    });
   }
   const summaryText = extractSummaryText(rawSummary);
   if (!summaryText) throw new Error('La IA no devolvió un resumen válido');
