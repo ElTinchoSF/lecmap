@@ -50,9 +50,11 @@ CREATE UNIQUE INDEX idx_jobs_active
   WHERE status IN ('queued', 'running');
 CREATE INDEX idx_jobs_claim ON jobs (kind, status, available_at);
 -- Espejo de supabase/migrations/003_quota.sql (solo columnas que lee quota.js)
+-- + is_admin de 005_admin.sql (gate /admin/*, S7 admin-user-manager).
 CREATE TABLE profiles (
   id uuid PRIMARY KEY,
-  quota_seconds_per_day integer
+  quota_seconds_per_day integer,
+  is_admin boolean NOT NULL DEFAULT false
 );
 `;
 
