@@ -72,7 +72,10 @@ export function summarySystemPrompt(targetSentences) {
     + 'El resumen debe tener aproximadamente ' + targetSentences
     + ' frases; priorizá cubrir todas las ideas principales antes que acortar. '
     + 'Si el material incluye tareas o consignas, incluilo en el resumen con su fecha límite. '
-    + 'No repitas ideas y no inventes contenido ausente.';
+    + 'No repitas ideas y no inventes contenido ausente. '
+    + 'Si el material trae etiquetas de hablante entre corchetes ([Hablante 1], [Hablante 2]), '
+    + 'son identificadores arbitrarios de diarización: no infieras el rol (docente, alumno) de un '
+    + 'hablante por su etiqueta, solo por lo que dice.';
 }
 
 // Tolerante a cualquier formato de salida: texto plano (lo pedido), JSON con
@@ -102,7 +105,9 @@ export const CHUNK_SYSTEM_PROMPT =
   + '- una idea concreta por línea, hasta 6 ideas (datos, definiciones, ejemplos, conclusiones).\n'
   + 'No inventes contenido que no esté en el texto. '
   + 'Marcá los ejemplos que da el docente empezando la idea con "Ejemplo:" y las tareas o '
-  + 'consignas con "Tarea:" incluyendo la fecha límite si la menciona.';
+  + 'consignas con "Tarea:" incluyendo la fecha límite si la menciona. '
+  + 'Las etiquetas de hablante entre corchetes ([Hablante N]) son identificadores arbitrarios '
+  + 'de diarización: no infieras el rol de un hablante por su etiqueta, solo por lo que dice.';
 
 // Parsea la salida del bloque: viñetas (-, *, •, 1.) = points; el resto
 // (incluida la línea "Resumen:") = summary. Tolera fences markdown y salida
@@ -138,4 +143,6 @@ export const MERGE_SYSTEM_PROMPT =
   + 'en español que conserve TODOS los hechos, definiciones, fórmulas, ejemplos, nombres, tareas, '
   + 'fechas límite y conclusiones de los fragmentos —incluidos los puntos que empiezan con '
   + '"Ejemplo:" y "Tarea:"—, sin inventar nada y sin repetirte. '
+  + 'Las etiquetas de hablante ([Hablante N]) son identificadores arbitrarios de diarización, '
+  + 'no roles: no infieras quién es docente o alumno por la etiqueta. '
   + 'Sin encabezados ni preámbulo: sólo el contenido condensado.';

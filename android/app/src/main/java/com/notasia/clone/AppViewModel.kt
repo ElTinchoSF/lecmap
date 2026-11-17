@@ -3,6 +3,7 @@ package com.notasia.clone
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,6 +18,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.google.gson.JsonParser
 import retrofit2.HttpException
 import java.io.File
 
@@ -446,6 +448,61 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
   }
 
+  /**
+   * T9 (S3): renombra un hablante en el servidor (PATCH /recordings/:id/speakers)
+   * y sincroniza la copia local. El server devuelve el recording con todos los
+   * segmentos de ese hablante ya renombrados (overlay), no solo el editado.
+   */
+  fun renameSpeaker(serverId: String, from: String, to: String) {
+    viewModelScope.launch {
+      busy = true
+      error = null
+      try {
+        val detail = withContext(Dispatchers.IO) {
+          api.renameSpeaker(serverId, RenameSpeakerReq(from, to))
+        }
+        withContext(Dispatchers.IO) { store.updateFromServer(serverId, detail) }
+        // Nota pura de servidor: serverId null, el id ES el id del server.
+        val sel = selected
+        if (sel != null && (sel.serverId == serverId || sel.id == serverId)) {
+          selected = sel.copy(transcript = detail.transcript ?: sel.transcript)
+        }
+        refresh()
+      } catch (e: Exception) {
+        if (!handleGone(e)) error = friendly(e)
+      } finally {
+        busy = false
+      }
+    }
+  }
+
+  /**
+   * S1: duración del archivo en segundos, para la cuota de audio diaria que
+   * cobra el server. Si no se puede medir devuelve 0 y el server la estima
+   * (ffprobe o bytes a 32 kbps). Decisión: el campo se manda siempre, aunque
+   * dé 0 — es el server quien decide cómo resolverlo.
+   */
+  private fun durationSecondsOf(file: File): Int {
+    val retriever = MediaMetadataRetriever()
+    return try {
+      retriever.setDataSource(file.absolutePath)
+      val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+      (ms / 1000).toInt()
+    } catch (e: Exception) {
+      0
+    } finally {
+      runCatching { retriever.release() }
+    }
+  }
+
+  /** Parte multipart `duration` (texto plano, sin content-type). */
+  private fun durationPartOf(file: File): MultipartBody.Part =
+    MultipartBody.Part.createFormData(
+      "duration",
+      null,
+      durationSecondsOf(file).toString().toRequestBody(null),
+    )
+
   fun transcribe() {
     val rec = selected ?: return
     val serverId = rec.serverId
@@ -464,10 +521,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val part = MultipartBody.Part.createFormData(
               "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
             )
-            withContext(Dispatchers.IO) { api.uploadAudio(serverId, part) }
+            withContext(Dispatchers.IO) { api.uploadAudio(serverId, part, durationPartOf(file)) }
           }
         }
-        val detail = withContext(Dispatchers.IO) { api.transcribe(serverId) }
+        // 202: encolar si el SERVIDOR no tiene transcripción — la copia local
+        // puede tener una vieja que el servidor no conoce. Polling hasta ready.
+        val remote = withContext(Dispatchers.IO) { api.get(serverId) }
+        if (remote.transcript.isNullOrEmpty()) {
+          withContext(Dispatchers.IO) { api.transcribe(serverId) }
+        }
+        awaitTranscribe(serverId)
+        val detail = withContext(Dispatchers.IO) { api.get(serverId) }
         store.updateFromServer(serverId, detail)
         selected = store.findByServerId(serverId)?.let { detail.withLocal(it) } ?: detail
         refresh()
@@ -534,10 +598,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
           )
           val titleBody = l.title.toRequestBody("text/plain".toMediaType())
-          val created = withContext(Dispatchers.IO) { api.upload(part, titleBody) }
+          val created = withContext(Dispatchers.IO) { api.upload(part, titleBody, durationPartOf(file)) }
           serverId = created.id ?: throw IllegalStateException("El servidor no devolvió un id")
           store.setServerId(l.localId, serverId)
           current = created
+        } else {
+          // El estado de referencia es el del SERVIDOR: la copia local puede
+          // traer transcripción/resumen que el servidor no conoce (p. ej.
+          // esta nota se re-subió tras el vaciado de la DB).
+          current = withContext(Dispatchers.IO) { api.get(serverId) }
         }
 
         if (current.transcript.isNullOrEmpty()) {
@@ -548,12 +617,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
               val part = MultipartBody.Part.createFormData(
                 "audio", file.name, file.asRequestBody("audio/mp4".toMediaType())
               )
-              withContext(Dispatchers.IO) { api.uploadAudio(serverId, part) }
+              withContext(Dispatchers.IO) { api.uploadAudio(serverId, part, durationPartOf(file)) }
             } else {
               throw IllegalStateException("No hay audio disponible para transcribir")
             }
           }
-          current = withContext(Dispatchers.IO) { api.transcribe(serverId) }
+          // 202: encolar en el servidor (obligatorio — sin este POST no hay
+          // job) y esperar los segmentos con polling.
+          withContext(Dispatchers.IO) { api.transcribe(serverId) }
+          awaitTranscribe(serverId)
+          current = withContext(Dispatchers.IO) { api.get(serverId) }
           store.updateFromServer(serverId, current)
           selected = current
         }
@@ -694,7 +767,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       ?.substringAfterLast('\\')
       ?.takeIf { it.isNotBlank() }
       ?: return null
-    return Net.normalize(serverUrl) + "files/" + name
+    // El reproductor no manda Authorization: el token viaja como query param.
+    val base = Net.normalize(serverUrl) + "files/" + name
+    return if (accessToken.isNotEmpty()) "$base?token=$accessToken" else base
   }
 
   private suspend fun awaitSummary(serverId: String): RecordingDto = withContext(Dispatchers.IO) {
@@ -710,6 +785,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
       if (!isServerProcessing(d.status)) return@withContext d
     }
     throw IllegalStateException("El resumen está tardando demasiado. Probá de nuevo en unos minutos.")
+  }
+
+  /**
+   * La transcripción corre en la cola del backend (202): esperamos a que
+   * tenga segmentos. Timeout 90 min — 2 h de audio en la VM pueden tardar.
+   */
+  private suspend fun awaitTranscribe(serverId: String): RecordingDto = withContext(Dispatchers.IO) {
+    val deadline = System.currentTimeMillis() + 90 * 60_000
+    while (System.currentTimeMillis() < deadline) {
+      delay(3000)
+      val d = api.get(serverId)
+      if (d.status == "error") throw IllegalStateException(d.error ?: "No se pudo transcribir")
+      if (!d.transcript.isNullOrEmpty()) return@withContext d
+    }
+    throw IllegalStateException("La transcripción está tardando demasiado. Revisá la nota más tarde.")
   }
 
   private fun merge(locals: List<LocalNote>, server: List<RecordingDto>): List<RecordingDto> {
@@ -768,8 +858,24 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     return false
   }
 
+  /**
+   * Mensaje `error` del cuerpo JSON del server. Cubre el 429 de cuota de
+   * audio diaria (S1) y el de rate limit (S7): sin esto el usuario solo ve
+   * "HTTP 429 Client Error" y no entiende qué pasó.
+   */
+  private fun serverErrorMessage(e: HttpException): String? = try {
+    val raw = e.response()?.errorBody()?.string()
+    if (raw.isNullOrBlank()) null
+    else JsonParser.parseString(raw).asJsonObject
+      .get("error")?.takeIf { it.isJsonPrimitive }?.asString
+  } catch (parse: Exception) {
+    null
+  }
+
   private fun friendly(e: Exception): String =
     if (e is HttpException && e.code() == 401)
       "Sesión expirada. Volvé a iniciar sesión."
+    else if (e is HttpException && e.code() == 429)
+      serverErrorMessage(e) ?: "Demasiadas solicitudes. Esperá un momento y volvé a intentarlo."
     else e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
 }

@@ -54,6 +54,8 @@ data class AskRes(val answer: String? = null)
 
   data class RenameReq(val title: String)
 
+  data class RenameSpeakerReq(val from: String, val to: String)
+
 interface Api {
   @GET("recordings")
   suspend fun list(
@@ -65,11 +67,16 @@ interface Api {
   @GET("recordings/{id}")
   suspend fun get(@Path("id") id: String): RecordingDto
 
+  // duration viaja como MultipartBody.Part armado en AppViewModel (ya trae
+  // su nombre "duration"; Retrofit no acepta @Part("nombre") con Part).
   @Multipart
   @POST("recordings")
   suspend fun upload(
     @Part audio: MultipartBody.Part,
     @Part("title") title: RequestBody,
+    // S1: duración del audio en segundos; la cuota diaria se cobra con esto
+    // (si llega vacío o 0, el server la estima con ffprobe o por bytes).
+    @Part duration: MultipartBody.Part,
   ): RecordingDto
 
   @Multipart
@@ -77,8 +84,12 @@ interface Api {
   suspend fun uploadAudio(
     @Path("id") id: String,
     @Part audio: MultipartBody.Part,
+    @Part duration: MultipartBody.Part,
   ): RecordingDto
 
+  // POST /transcribe responde 202 y ENCOLA el job en la cola del backend;
+  // el cliente espera los segmentos con awaitTranscribe (polling a GET).
+  // Obligatorio: sin este POST nadie encola la transcripción (regresión de T5).
   @POST("recordings/{id}/transcribe")
   suspend fun transcribe(@Path("id") id: String): RecordingDto
 
@@ -94,6 +105,10 @@ interface Api {
   /** S4: renombrar la nota en el servidor (ruta nueva PATCH /recordings/:id). */
   @PATCH("recordings/{id}")
   suspend fun rename(@Path("id") id: String, @Body body: RenameReq): RecordingDto
+
+  /** T9 (S3): renombrar un hablante de la nota (to vacío revierte). */
+  @PATCH("recordings/{id}/speakers")
+  suspend fun renameSpeaker(@Path("id") id: String, @Body body: RenameSpeakerReq): RecordingDto
 }
 
 /** Resultado de validar la URL del backend. */

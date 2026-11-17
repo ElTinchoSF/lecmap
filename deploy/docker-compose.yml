@@ -1,0 +1,117 @@
+# LecMap pipeline — Hetzner (T10)
+# Stack: Postgres + backend Node + worker STT + Caddy (HTTPS en api.lecmap.app)
+# Uso: copiar .env.example a .env, completar secrets, luego `docker compose up -d --build`.
+
+name: lecmap
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lecmap
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD es obligatorio (ver .env.example)}
+      POSTGRES_DB: lecmap
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lecmap -d lecmap"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: ../backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      DATABASE_URL: postgres://lecmap:${POSTGRES_PASSWORD}@db:5432/lecmap
+      DATABASE_SSL: disable
+      SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL es obligatorio (ver .env.example)}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://lecmap.app,https://www.lecmap.app,https://eltinchosf.github.io}
+      UPLOADS_DIR: /data/uploads
+      WORKER_URL: http://worker:8080
+      WORKER_TOKEN: ${WORKER_TOKEN:?WORKER_TOKEN es obligatorio (ver .env.example)}
+      WORKER_TIMEOUT_MS: "10800000"
+      # LLM: gemini si hay GEMINI_API_KEY; si no, groq con OPENAI_* (ver src/llm.js)
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.groq.com/openai/v1}
+      LLM_MODEL: ${LLM_MODEL:-}
+      # Enrutamiento por cuota free (la cuota de Gemini es POR MODELO):
+      # MAIN = modelo de calidad para el call final del resumen;
+      # BULK = modelo de volumen para chunks/condensado/mindmap/preguntas.
+      # Sin estas claves ambos tiers caen a LLM_MODEL (comportamiento previo).
+      LLM_MODEL_MAIN: ${LLM_MODEL_MAIN:-}
+      LLM_MODEL_BULK: ${LLM_MODEL_BULK:-}
+      CHAT_MODEL: ${CHAT_MODEL:-}
+      QUOTA_AUDIO_SECONDS_PER_DAY: ${QUOTA_AUDIO_SECONDS_PER_DAY:-7200}
+    volumes:
+      - uploads:/data/uploads
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    networks:
+      - internal
+
+  worker:
+    build:
+      context: ../worker
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      WORKER_TOKEN: ${WORKER_TOKEN:?WORKER_TOKEN es obligatorio (ver .env.example)}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      WHISPER_LANGUAGE: es
+      WORKER_MAX_MB: "100"
+    volumes:
+      - models:/models
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+  uploads:
+  models:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge

@@ -180,3 +180,13 @@ test('MERGE_SYSTEM_PROMPT preserva marcadores de ejemplo y tarea', () => {
   assert.match(MERGE_SYSTEM_PROMPT, /Tarea:/);
   assert.match(MERGE_SYSTEM_PROMPT, /fechas límite|fecha límite/i);
 });
+
+test('S3 guard: prompts no tratan el label de hablante como rol (docente/alumno)', () => {
+  // Los labels [Hablante N] vienen de diarización real: son IDs arbitrarios.
+  // El LLM no debe inferir quién es docente o alumno por el número de hablante.
+  for (const p of [summarySystemPrompt(8), CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT]) {
+    assert.match(p, /hablante/i, 'los prompts deben hablar de hablantes');
+    assert.match(p, /no.*(infieras|asumas|asuma|interpretes|deduzcas).*rol|arbitrario/i,
+      'los prompts deben declarar que el label de hablante no es un rol');
+  }
+});

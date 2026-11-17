@@ -669,9 +669,53 @@ function MindmapView({ mm }: { mm: unknown }) {
   );
 }
 
-function serverAudioUrl(audioPath?: string | null): string | null {
+/**
+ * Duración del blob en segundos (S1: la cuota diaria se mide en segundos de
+ * audio). objectURL + <audio>: si los metadata no llegan en 5 s devuelve 0 y
+ * el server cae a ffprobe o a la estimación por bytes. El objectURL se
+ * revoca siempre, haya resuelto o no.
+ */
+function blobDurationSeconds(blob: Blob): Promise<number> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio();
+    let settled = false;
+    const done = (secs: number) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
+      URL.revokeObjectURL(url);
+      resolve(secs);
+    };
+    const timer = window.setTimeout(() => done(0), 5000);
+    audio.onloadedmetadata = () => {
+      const d = audio.duration;
+      done(Number.isFinite(d) && d > 0 ? d : 0);
+    };
+    audio.onerror = () => done(0);
+    audio.src = url;
+  });
+}
+
+/** Mensaje `error` del cuerpo JSON del server (429 cuota/rate, 413, 400…). */
+async function responseError(r: Response, fallback: string): Promise<string> {
+  try {
+    const body = await r.json();
+    if (body && typeof body.error === 'string' && body.error) return body.error;
+  } catch {
+    // cuerpo no JSON: seguimos con el fallback
+  }
+  return fallback;
+}
+
+/** El <audio> no puede mandar Authorization: el token viaja como query param. */
+async function serverAudioUrl(audioPath?: string | null): Promise<string | null> {
   if (!audioPath) return null;
-  return `${API}/files/${audioPath.split(/[\\/]/).pop()}`;
+  const base = `${API}/files/${audioPath.split(/[\\/]/).pop()}`;
+  const token = await getAccessToken();
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base;
 }
 
 /** El backend resume en segundo plano (202). Esperamos a que termine. */
@@ -686,6 +730,25 @@ async function waitForSummary(serverId: string, timeoutMs = 12 * 60 * 1000): Pro
     if (detail.status === 'error') throw new Error(detail.error || 'No se pudo resumir');
     if (Date.now() - start > timeoutMs) {
       throw new Error('El resumen está tardando demasiado. Probá de nuevo en unos minutos.');
+    }
+  }
+}
+
+/**
+ * La transcripción corre en la cola (202). Esperamos a que tenga segmentos.
+ * Timeout generoso: 2 h de audio en la VM pueden tardar ~90 min.
+ */
+async function waitForTranscribe(serverId: string, timeoutMs = 90 * 60 * 1000): Promise<Recording> {
+  const start = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const res = await apiFetch(`/recordings/${serverId}`);
+    if (!res.ok) throw new Error(`No se pudo consultar la transcripción (HTTP ${res.status})`);
+    const detail: Recording = await res.json();
+    if (detail.transcript.length > 0) return detail;
+    if (detail.status === 'error') throw new Error(detail.error || 'No se pudo transcribir');
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('La transcripción está tardando demasiado. Revisá la nota más tarde.');
     }
   }
 }
@@ -805,6 +868,8 @@ export default function App() {
   // S2/S4: diálogo de nombre — tras guardar una toma o al renombrar una nota.
   const [rename, setRename] = useState<{ localId: string | null; serverId: string | null; suggested: string } | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  // T9 (S3): edición inline de hablante — renombre por nota (PATCH /speakers).
+  const [speakerEdit, setSpeakerEdit] = useState<{ idx: number; from: string; draft: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [activeSeg, setActiveSeg] = useState<number>(-1);
   const [error, setError] = useState<string | null>(null);
@@ -901,7 +966,7 @@ export default function App() {
         return;
       }
     }
-    setAudioUrl(serverAudioUrl(note.audioPath));
+    setAudioUrl(await serverAudioUrl(note.audioPath));
   };
 
   const toggleRec = async () => {
@@ -1077,17 +1142,21 @@ export default function App() {
   const uploadBlob = async (local: LocalNote, blob: Blob): Promise<Recording> => {
     const fd = new FormData();
     fd.append('audio', blob, 'nota.webm');
+    // Duración medida en el navegador para que la cuota del día (S1) cobre lo
+    // real. Si da 0 igual se manda: el server fallbacka a ffprobe/bytes.
+    fd.append('duration', String(Math.round(await blobDurationSeconds(blob))));
     fd.append('title', local.title);
     const r = await apiFetch('/recordings', { method: 'POST', body: fd });
-    if (!r.ok) throw new Error(`No se pudo subir el audio (HTTP ${r.status})`);
+    if (!r.ok) throw new Error(await responseError(r, `No se pudo subir el audio (HTTP ${r.status})`));
     return r.json();
   };
 
   const uploadAudioToServer = async (serverId: string, blob: Blob) => {
     const fd = new FormData();
     fd.append('audio', blob, 'nota.webm');
+    fd.append('duration', String(Math.round(await blobDurationSeconds(blob))));
     const r = await apiFetch(`/recordings/${serverId}/audio`, { method: 'POST', body: fd });
-    if (!r.ok) throw new Error(`No se pudo re-subir el audio (HTTP ${r.status})`);
+    if (!r.ok) throw new Error(await responseError(r, `No se pudo re-subir el audio (HTTP ${r.status})`));
     return r.json();
   };
 
@@ -1136,7 +1205,9 @@ export default function App() {
           try { msg = JSON.parse(body)?.error || body; } catch { /* cuerpo no JSON */ }
           throw new Error(msg || `Error al transcribir (HTTP ${r.status})`);
         }
-        detail = await r.json();
+        // 202: la cola procesa en background; esperamos los segmentos.
+        setServerNotes((prev) => prev.map((s) => (s.id === serverId ? { ...s, status: 'transcribing', error: undefined } : s)));
+        detail = await waitForTranscribe(serverId);
       }
 
       if (!transcribeOnly && (!note.summary || needsTranscribe)) {
@@ -1247,6 +1318,34 @@ export default function App() {
     };
     await saveLocalNote(updated);
     await refreshLocals();
+  };
+
+  // T9 (S3): renombra el hablante de la nota en el server y aplica el
+  // resultado (el server devuelve el recording con el overlay aplicado).
+  const saveSpeakerEdit = async () => {
+    const edit = speakerEdit;
+    const sid = sel?.serverId;
+    setSpeakerEdit(null);
+    if (!edit || !sid) return;
+    const to = edit.draft.trim();
+    if (!to || to === edit.from) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await apiFetch(`/recordings/${sid}/speakers`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: edit.from, to }),
+      });
+      if (!r.ok) throw new Error(await responseError(r, `HTTP ${r.status}`));
+      const detail: Recording = await r.json();
+      await syncLocal(sid, detail);
+      setSel((prev) => (prev && prev.serverId === sid ? { ...prev, transcript: detail.transcript } : prev));
+    } catch (e) {
+      setError(errText(e, 'No se pudo renombrar el hablante'));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const ask = async () => {
@@ -1657,7 +1756,31 @@ export default function App() {
                       <div key={i} className={`transcript-line ${activeSeg === i ? 'active' : ''}`} onClick={() => seek(s.start)}>
                         <div className="transcript-time">{fmtTimestamp(s.start)}</div>
                         <div className="transcript-text">
-                          {s.speaker && <span className="transcript-speaker">{s.speaker}</span>}
+                          {s.speaker && speakerEdit?.idx === i ? (
+                            <input
+                              className="transcript-speaker-edit"
+                              value={speakerEdit.draft}
+                              autoFocus
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => setSpeakerEdit({ ...speakerEdit, draft: e.target.value })}
+                              onBlur={saveSpeakerEdit}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') saveSpeakerEdit();
+                                if (e.key === 'Escape') setSpeakerEdit(null);
+                              }}
+                            />
+                          ) : s.speaker ? (
+                            <span
+                              className="transcript-speaker"
+                              title="Renombrar hablante"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (sel.serverId) setSpeakerEdit({ idx: i, from: s.speaker, draft: s.speaker });
+                              }}
+                            >
+                              {s.speaker}
+                            </span>
+                          ) : null}
                           {s.text}
                         </div>
                       </div>
