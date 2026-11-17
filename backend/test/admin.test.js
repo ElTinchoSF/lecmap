@@ -449,4 +449,51 @@ describe('admin users manager', { concurrency: false }, () => {
     const res = await adminReq('DELETE', `/admin/users/${TARGET_UID}`, { token });
     assert.equal(res.statusCode, 403);
   });
+
+  // --- Regresiones del verifier independiente (bloqueadores B1-B3 + S9) ---
+
+  test('S5: auto-borrado con el propio uuid en mayúsculas responde 400', async () => {
+    setStub('DELETE', /^\/auth\/v1\/admin\/users\/[^/]+$/, (req, res) => res.writeHead(200).end());
+    const token = await mintToken(ADMIN_UID);
+    const res = await adminReq('DELETE', `/admin/users/${ADMIN_UID.toUpperCase()}`, { token });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.json().error, /No podés borrar tu propia cuenta/);
+    assert.equal(stubRequests.filter((r) => r.method === 'DELETE').length, 0);
+    const { rows } = await db.pool.query('SELECT is_admin FROM profiles WHERE id = $1', [ADMIN_UID]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].is_admin, true);
+  });
+
+  test('S4: PATCH sin quotaSeconds responde 400 y no toca la cuota', async () => {
+    await insertProfile(TARGET_UID, { quotaSeconds: 5000 });
+    const token = await mintToken(ADMIN_UID);
+    for (const body of [{}, undefined]) {
+      const res = await adminReq('PATCH', `/admin/users/${TARGET_UID}`, { token, body });
+      assert.equal(res.statusCode, 400, JSON.stringify(body));
+      const { rows } = await db.pool.query('SELECT quota_seconds_per_day FROM profiles WHERE id = $1', [TARGET_UID]);
+      assert.equal(rows[0].quota_seconds_per_day, 5000);
+    }
+  });
+
+  test('S3: la contraseña explícita llega intacta a Supabase', async () => {
+    setStubJson('POST', '/auth/v1/admin/users', 200, {
+      user: { id: CREATE_UID, email: 'beta@example.com', created_at: '2026-11-17T12:00:00Z' },
+    });
+    const token = await mintToken(ADMIN_UID);
+    const password = '  secreto123  ';
+    const res = await adminReq('POST', '/admin/users', { token, body: { email: 'beta@example.com', password } });
+    assert.equal(res.statusCode, 201);
+    const createReq = stubRequests.find((r) => r.method === 'POST' && r.pathname === '/auth/v1/admin/users');
+    assert.equal(createReq.body.password, password);
+  });
+
+  test('S5: DELETE borra también los segments del usuario', async () => {
+    await insertProfile(TARGET_UID);
+    const recId = await insertRecording(TARGET_UID);
+    setStub('DELETE', /^\/auth\/v1\/admin\/users\/[^/]+$/, (req, res) => res.writeHead(200).end());
+    const res = await adminReq('DELETE', `/admin/users/${TARGET_UID}`, { token: await mintToken(ADMIN_UID) });
+    assert.equal(res.statusCode, 200);
+    const { rows } = await db.pool.query('SELECT * FROM segments WHERE recording_id = $1', [recId]);
+    assert.equal(rows.length, 0);
+  });
 });

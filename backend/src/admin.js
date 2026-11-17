@@ -96,11 +96,13 @@ export async function registerAdminRoutes(app, { supabaseUrl }) {
 
     adminApp.post('/users', async (req, reply) => {
       const email = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
-      const password = typeof req.body?.password === 'string' ? req.body.password.trim() : '';
+      // La contraseña NO se recorta: trim alteraría la credencial que Supabase
+      // almacena (el admin cree una contraseña y se guarda otra distinta).
+      const password = typeof req.body?.password === 'string' ? req.body.password : '';
       if (!isValidEmail(email)) {
         return reply.code(400).send({ error: 'Email inválido' });
       }
-      if (!password) {
+      if (!password.trim()) {
         return reply.code(400).send({ error: 'La contraseña es requerida' });
       }
 
@@ -159,7 +161,9 @@ export async function registerAdminRoutes(app, { supabaseUrl }) {
         return reply.code(400).send({ error: 'ID de usuario inválido' });
       }
       const quotaSeconds = req.body?.quotaSeconds;
-      if (quotaSeconds !== null && quotaSeconds !== undefined && !Number.isFinite(quotaSeconds)) {
+      // S4: el campo es obligatorio y debe ser number|null explícito —
+      // undefined (body vacío o sin clave) no puede resetear la cuota a NULL.
+      if (quotaSeconds === undefined || (quotaSeconds !== null && !Number.isFinite(quotaSeconds))) {
         return reply.code(400).send({ error: 'quotaSeconds debe ser un número o null' });
       }
 
@@ -167,7 +171,7 @@ export async function registerAdminRoutes(app, { supabaseUrl }) {
         `INSERT INTO profiles (id, quota_seconds_per_day)
          VALUES ($1, $2)
          ON CONFLICT (id) DO UPDATE SET quota_seconds_per_day = EXCLUDED.quota_seconds_per_day`,
-        [id, quotaSeconds === undefined ? null : quotaSeconds],
+        [id, quotaSeconds],
       );
 
       const { rows } = await pool.query('SELECT * FROM profiles WHERE id = $1', [id]);
@@ -179,7 +183,9 @@ export async function registerAdminRoutes(app, { supabaseUrl }) {
       if (!isUuid(id)) {
         return reply.code(400).send({ error: 'ID de usuario inválido' });
       }
-      if (id === req.userId) {
+      // UUID case-insensitive (Postgres lo es; la comparación de strings no):
+      // sin toLowerCase el guard se saltea con el uuid en mayúsculas.
+      if (id.toLowerCase() === String(req.userId).toLowerCase()) {
         return reply.code(400).send({ error: 'No podés borrar tu propia cuenta' });
       }
 
