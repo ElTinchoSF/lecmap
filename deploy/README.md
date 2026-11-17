@@ -32,6 +32,7 @@ Crear `.env` en este directorio (no se commitea). Generar secrets con `openssl r
 | `WHISPER_MODEL` | no | Default `small` (S4). Si la VM se queda sin RAM, bajar a `base` |
 | `CORS_ORIGINS` | no | Default: `https://lecmap.app,https://www.lecmap.app,https://eltinchosf.github.io` |
 | `QUOTA_AUDIO_SECONDS_PER_DAY` | no | Default `7200` (2 h, S1) |
+| `SUPABASE_SERVICE_ROLE_KEY` | no | **Secret key** de Supabase (Dashboard → Settings → API). Habilita la Admin API del gestor de usuarios (`/admin/*`): sin ella esos endpoints responden 503. Solo en el `.env` de la VM — nunca en el repo, el frontend ni respuestas HTTP |
 
 \* Hace falta al menos uno de los dos para Resumen / Mapa / ApIA.
 

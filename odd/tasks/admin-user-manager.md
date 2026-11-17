@@ -94,7 +94,7 @@ verifica en cada método (un caso no-admin por método basta además de los suyo
 | ID | Specs | Ruta | Estado | Commit / evidencia |
 |----|-------|------|--------|--------------------|
 | T1 | S7 | inline | ✅ hecho | migración `005_admin.sql` + espejo BASE_SCHEMA (`is_admin`); apply en VM (`ALTER` + `UPDATE` admin uid 29135fb8 → is_admin=true, verificado en SELECT); suite backend 90/90 verde con el espejo nuevo |
-| T2 | S1, S2, S3, S4, S5, S9 | delegated (writer paralelo — trigger: unidades independientes con superficies disjuntas backend/ vs web/, cada una >100 líneas) | ✅ hecho | RED: 404 en todos los `/admin/*` (ej. `404 !== 403`); GREEN: `npm test` **112/112** (90 baseline + 22 nuevos); archivos: `src/admin.js` (gate compartido + 4 rutas), `index.js` (+3), `test/admin.test.js` (470 líneas, stub Supabase + PG efímero); desviaciones: ninguna |
+| T2 | S1, S2, S3, S4, S5, S9 | delegated (writer paralelo — trigger: unidades independientes con superficies disjuntas backend/ vs web/, cada una >100 líneas) | ✅ hecho | Commits `f987276` + corrección `b2871ca`: RED 404 → GREEN; **verifier independiente `fail` → 3 bloqueadores corregidos en un solo batch** (B1 guard self-delete case-sensitive → `toLowerCase()`; B2 PATCH aceptaba `quotaSeconds` ausente y reseteaba a NULL → 400 estricto; B3 `.trim()` alteraba la contraseña enviada a Supabase → sin trim, solo check de vacío) + 4 tests de regresión del verifier; RED verificado contra el código pre-fix (3/4 fail) → **116/116**. Advisories no bloqueantes: aserción de segments (ya agregada), botón "Usuarios" transitorio al cambiar de usuario (S6), sin ancla "Ajustes" en web |
 | T3 | S6 | delegated (writer paralelo — misma evidencia que T2) | ✅ hecho | `web/src/UsersAdmin.tsx` (tabla con cuota inline, form creación, delete con confirmación, badge admin) + sonda `/admin/users` una-vez-por-sesión en App.tsx (silenciosa fuera de 200) + estilos App.css; verificación: lint OK (warnings preexistentes) + `tsc -b && vite build` OK; desviaciones: ninguna |
 | T4 | S8 | inline | ⬜ pendiente | key en .env de VM + apply T1 + rebuild backend + E2E curl (requiere clave del usuario) |
 | T5 | S8 | inline | ⬜ pendiente | docs (deploy/README.md) + seam check (suite backend + lint/tsc/build web) + cierre |
@@ -109,8 +109,6 @@ beta-infra-oracle L12 (2026-11-10): "lo próximo que haremos es un gestor de
 usuarios, donde mi cuenta sea administradora y pueda generar las 10 cuentas de
 prueba beta desde mi propia cuenta".
 
-L2 (2026-11-14, ODD): forecast de ~750-900 líneas autorizadas supera 400 →
-estrategia de entrega a confirmar con el usuario (single-pr vs chain backend→web).
-Nota: la rama base `feat/beta-infra-oracle` está sin merge (24 commits) — los PRs
-de este feature se apilan sobre ella o esperan el merge de beta; decisión de
-delivery sigue siendo del usuario (push/PR nunca automáticos).
+L2 (2026-11-16, usuario, elección mediante pregunta): **"Single PR con commits por unidad (Recomendado)"** — el feature (~1250 líneas autorizadas) se entrega como un solo PR de `feat/admin-user-manager` sobre la base `feat/beta-infra-oracle` (24 commits sin merge; decisión de push/PR sigue siendo del usuario), con commits internos por unidad de trabajo. Estrategia registrada: `single-pr`.
+
+L3 (2026-11-16, verificación): assess RDD nativo `risk: medium` (`executable_change`), `review_due: false` (`under_budget`) — en ambos cortes (pre y post corrección); sin ceremonia de review todavía. Verifier independiente `fail` con 3 bloqueadores (S5 guard uuid case-sensitive, S4 `quotaSeconds` ausente reseteaba cuota, S3 password con `.trim()`) → corrección acotada en un batch + recheck limitado (RED pre-fix 3/4 fail → 116/116). Risk del feature = **ítem 2** (gate de permisos + manejo de service_role).
