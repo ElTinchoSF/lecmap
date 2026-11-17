@@ -34,6 +34,7 @@ import { removeAudioFile, cleanupOrphanAudio, defaultUploadsDir } from './cleanu
 import { targetSummarySentences, transcriptDurationSeconds, condenseToFit, summarySystemPrompt, extractSummaryText, parseChunkText, CHUNK_SYSTEM_PROMPT, MERGE_SYSTEM_PROMPT } from './summary.js';
 import { normalizeMindmap, mindmapSystemPrompt } from './mindmap.js';
 import { upstreamAgent, upstreamFetch, FormData } from './net.js';
+import { registerAdminRoutes } from './admin.js';
 
 const app = Fastify({ logger: true });
 const defaultOrigins = [
@@ -85,6 +86,8 @@ let jwks = null;
 if (SUPABASE_URL) {
   jwks = createRemoteJWKSet(new URL(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`));
 }
+
+await registerAdminRoutes(app, { supabaseUrl: SUPABASE_URL });
 
 app.addHook('onRequest', async (req, reply) => {
   const pathname = (req.url || '').split('?')[0];

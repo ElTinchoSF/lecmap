@@ -12,6 +12,7 @@ import {
 import type { LocalNote } from './local';
 import { useAuth } from './auth';
 import { LoginScreen, AuthSplash } from './Login';
+import UsersAdmin from './UsersAdmin';
 import { supabase } from './supabase';
 import './App.css';
 
@@ -875,6 +876,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   // S8: serverId cuyo detalle se está cargando; la tarjeta muestra "Cargando nota…".
   const [loadingId, setLoadingId] = useState<string | null>(null);
+  // S6: panel de administración de usuarios.
+  const [showUsersAdmin, setShowUsersAdmin] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const adminProbedFor = useRef<string | null>(null);
   const mr = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -938,6 +943,27 @@ export default function App() {
   }, [debouncedQ, auth.session]);
 
   useEffect(() => { load(); }, [load]);
+
+  // S6: sondeo único por sesión para mostrar el botón de administración.
+  useEffect(() => {
+    if (!auth.session) {
+      adminProbedFor.current = null;
+      return;
+    }
+    const userId = auth.session.user.id;
+    if (adminProbedFor.current === userId) return;
+    adminProbedFor.current = userId;
+    let cancelled = false;
+    apiFetch('/admin/users')
+      .then((r) => {
+        if (cancelled) return;
+        setIsAdmin(r.status === 200);
+      })
+      .catch(() => {
+        if (!cancelled) setIsAdmin(false);
+      });
+    return () => { cancelled = true; };
+  }, [auth.session]);
 
   const list = useMemo(
     () => mergeNotes(serverNotes, locals, q, serverOk),
@@ -1497,15 +1523,22 @@ export default function App() {
             <span className="header-meta-info" title={API}>
               {auth.session.user?.email || API}
             </span>
-            <button
-              className="header-meta-link"
-              onClick={() => {
-                setApiDraft(API);
-                setShowSettings((v) => !v);
-              }}
-            >
-              Cambiar servidor
-            </button>
+            <div className="header-meta-links">
+              {isAdmin && (
+                <button className="header-meta-link" onClick={() => setShowUsersAdmin(true)}>
+                  Usuarios
+                </button>
+              )}
+              <button
+                className="header-meta-link"
+                onClick={() => {
+                  setApiDraft(API);
+                  setShowSettings((v) => !v);
+                }}
+              >
+                Cambiar servidor
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -1583,6 +1616,14 @@ export default function App() {
             Autenticación vía Supabase. Sesión: {auth.session?.user?.email ?? '—'}.
           </p>
         </div>
+      )}
+
+      {isAdmin && showUsersAdmin && (
+        <UsersAdmin
+          apiFetch={apiFetch}
+          onError={setError}
+          onClose={() => setShowUsersAdmin(false)}
+        />
       )}
 
       {error && (

@@ -54,6 +54,8 @@ services:
       LLM_MODEL_BULK: ${LLM_MODEL_BULK:-}
       CHAT_MODEL: ${CHAT_MODEL:-}
       QUOTA_AUDIO_SECONDS_PER_DAY: ${QUOTA_AUDIO_SECONDS_PER_DAY:-7200}
+      # Admin API de Supabase (gestor de usuarios, S8): secret key, solo VM.
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
     volumes:
       - uploads:/data/uploads
     healthcheck:
